@@ -1291,7 +1291,7 @@ export class BossBattle {
       }
     }
 
-    this.drawNumbers(ctx, T, core);
+    // luta de boss: sem números de dano (só as barras de vida contam a história)
     ctx.restore();
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -1888,46 +1888,6 @@ export class BossBattle {
     ctx.restore();
   }
 
-  private drawNumbers(ctx: CanvasRenderingContext2D, T: number, core: V) {
-    ctx.save();
-    ctx.textAlign = 'center';
-    ctx.lineJoin = 'round';
-    for (const a of this.pAtks) {
-      const d = T - a.hitAt;
-      if (d < 0 || d > 1.1) continue;
-      const k = d / 1.1;
-      const x = core.x - 30 + (h01(a.t * 10, 1) - 0.5) * 120;
-      const y = core.y - 40 - k * 70;
-      const size = a.crit ? 34 : 24;
-      ctx.globalAlpha = 1 - sm(0.6, 1, k);
-      ctx.font = `900 ${Math.round(size * (1 + (1 - sm(0, 0.15, k)) * 0.6))}px system-ui, sans-serif`;
-      ctx.lineWidth = 5;
-      ctx.strokeStyle = 'rgba(0,0,0,0.85)';
-      const txt = a.crit ? `${a.dmg}!` : String(a.dmg);
-      ctx.strokeText(txt, x, y);
-      ctx.fillStyle = a.crit ? '#ffd23a' : '#ffffff';
-      ctx.fillText(txt, x, y);
-    }
-    for (const b of this.bAtks) {
-      const d = T - b.hitAt;
-      if (d < 0 || d > 1.1) continue;
-      const k = d / 1.1;
-      b.targets.forEach((i, j) => {
-        const v = this.at(this.pt[i], T);
-        const x = v.x;
-        const y = v.y - 125 * this.ps - k * 50;
-        ctx.globalAlpha = 1 - sm(0.6, 1, k);
-        ctx.font = '900 22px system-ui, sans-serif';
-        ctx.lineWidth = 4;
-        ctx.strokeStyle = 'rgba(0,0,0,0.85)';
-        ctx.strokeText(`-${b.dmg[j]}`, x, y);
-        ctx.fillStyle = '#ff5a5a';
-        ctx.fillText(`-${b.dmg[j]}`, x, y);
-      });
-    }
-    ctx.restore();
-  }
-
   private drawHud(ctx: CanvasRenderingContext2D, T: number, hud: BossHud, cw: number) {
     const s = this.dpr;
     const show = sm(3.6, 4.4, T);
@@ -1947,10 +1907,6 @@ export class BossBattle {
     ctx.shadowColor = 'rgba(0,0,0,0.8)';
     ctx.shadowBlur = 6 * s;
     ctx.fillText(this.r.boss.name.toUpperCase(), x, y + 14 * s);
-    ctx.font = `600 ${Math.round(11 * s)}px system-ui, sans-serif`;
-    ctx.fillStyle = 'rgba(255,255,255,0.7)';
-    ctx.textAlign = 'right';
-    ctx.fillText(`${hud.bossHp.toLocaleString('pt-BR')} / ${hud.bossMax.toLocaleString('pt-BR')}`, x + w, y + 14 * s);
     ctx.shadowBlur = 0;
     const by = y + 22 * s;
     const bh = 12 * s;
