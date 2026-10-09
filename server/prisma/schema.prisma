@@ -1,0 +1,409 @@
+// GymBattle — schema do banco (MySQL)
+// Modelos das próximas fases (loja, lutas, ranking) serão adicionados via migrations.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique @db.VarChar(191)
+  username     String   @unique @db.VarChar(32)
+  passwordHash String   @db.VarChar(100)
+  role         Role     @default(USER)
+
+  // Progressão
+  level        Int      @default(1)
+  xp           Int      @default(0) // XP dentro do nível; pode ficar negativo
+  gold         Int      @default(0) // pode ficar negativo após remoção de foto fake
+  attrPoints   Int      @default(0) // pontos livres
+  str          Int      @default(5)
+  dex          Int      @default(5)
+  vig          Int      @default(5)
+  fort         Int      @default(5)
+  ess          Int      @default(5)
+  int          Int      @default(5)
+  fai          Int      @default(5)
+  respecCount  Int      @default(0)
+  lastRespecAt DateTime?
+
+  // Streak
+  streak       Int      @default(0)
+  lastPostDay  String?  @db.VarChar(10) // YYYY-MM-DD (Brasília)
+  restWeeks    Json?
+
+  // Ranking / visual
+  rankPoints   Int      @default(1000)
+  title        String?  @db.VarChar(64)
+  avatar       Json?
+  equipment    Json?    // { weapon, helm, chest, gloves, legs } — ids de itens
+  starterWeapon String? @db.VarChar(64)
+
+  // Desafios: protegido contra novos desafios até esta data
+  protectedUntil DateTime?
+  // Admin: evento lendário na próxima luta (desliga sozinho depois que acontece)
+  legendNext   Boolean  @default(false)
+  // Sessões: aumentar invalida todos os logins (troca de senha, "sair de todos")
+  tokenVersion Int      @default(0)
+
+  // CPF (só o "hash" com segredo, nunca o número): impede várias contas por pessoa
+  cpfHash      String?  @unique @db.VarChar(64)
+
+  // Grupo (1 por pessoa). groupRole: OWNER (criador) | ADMIN | MEMBER — NÃO tem nada a ver com o admin do site
+  groupId       String?
+  group         Group?   @relation("GroupMembers", fields: [groupId], references: [id], onDelete: SetNull)
+  groupRole     String   @default("MEMBER") @db.VarChar(8)
+  groupJoinedAt DateTime?
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  moderationActions ModerationLog[] @relation("ModActor")
+  moderationTargets ModerationLog[] @relation("ModTarget")
+  posts             Post[]
+  likes             Like[]
+  comments          Comment[]
+  reports           Report[]
+  rewards           RewardLedger[]
+  inventory         InventoryItem[]
+  battlesA          Battle[] @relation("BattleA")
+  battlesB          Battle[] @relation("BattleB")
+  challengesSent    Challenge[] @relation("ChallengeFrom")
+  challengesGot     Challenge[] @relation("ChallengeTo")
+  notifications     Notification[] @relation("NotifTo")
+  notifsCaused      Notification[] @relation("NotifFrom")
+  pushSubs          PushSubscription[]
+  groupInvitesGot   GroupInvite[] @relation("InviteTo")
+  gifts             Gift[]        @relation("GiftTo")
+  bossRunsLed       BossRun[]     @relation("RunLeader")
+  bossRunSeats      BossRunMember[]
+  groupInvitesSent  GroupInvite[] @relation("InviteFrom")
+
+  @@index([rankPoints])
+  @@index([groupId, rankPoints])
+}
+
+/// Grupo: cada grupo disputa ranking, desafios e temporada só entre os seus membros.
+model Group {
+  id         String   @id @default(cuid())
+  name       String   @db.VarChar(40)
+  inviteCode String?  @unique @db.VarChar(16) // link de convite (/convite/<código>)
+  createdAt  DateTime @default(now())
+  members    User[]   @relation("GroupMembers")
+  invites    GroupInvite[]
+}
+
+/// Convite para entrar num grupo (feito por um admin do grupo).
+model GroupInvite {
+  id          String   @id @default(cuid())
+  groupId     String
+  group       Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User     @relation("InviteTo", fields: [userId], references: [id], onDelete: Cascade)
+  invitedById String?
+  invitedBy   User?    @relation("InviteFrom", fields: [invitedById], references: [id], onDelete: SetNull)
+  status      String   @default("PENDING") @db.VarChar(10) // PENDING | ACCEPTED | DECLINED | CANCELLED
+  createdAt   DateTime @default(now())
+  resolvedAt  DateTime?
+
+  @@index([userId, status])
+  @@index([groupId, status])
+}
+
+model Post {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  imagePath    String   @db.VarChar(191)
+  width        Int
+  height       Int
+  caption      String?  @db.VarChar(280)
+  source       String   @default("gallery") @db.VarChar(10) // camera | gallery
+  rewarded     Boolean  @default(false)
+  xpAwarded    Int      @default(0)
+  goldAwarded  Int      @default(0)
+  day          String   @db.VarChar(10) // YYYY-MM-DD (Brasília)
+  likeCount    Int      @default(0)
+  commentCount Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  likes    Like[]
+  comments Comment[]
+  reports  Report[]
+
+  @@index([createdAt])
+  @@index([userId, createdAt])
+}
+
+/// Hash perceptual de toda foto já postada. Fica mesmo depois que a foto é apagada,
+/// para impedir que a mesma imagem seja postada de novo.
+model PhotoHash {
+  id        String   @id @default(cuid())
+  hash      BigInt   // 64 bits (guardado com sinal)
+  userId    String?
+  postId    String?
+  createdAt DateTime @default(now())
+
+  @@index([hash])
+}
+
+model Like {
+  userId    String
+  postId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@id([userId, postId])
+  @@index([postId])
+}
+
+model Comment {
+  id        String   @id @default(cuid())
+  postId    String
+  userId    String
+  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  text      String   @db.VarChar(500)
+  createdAt DateTime @default(now())
+
+  @@index([postId, createdAt])
+}
+
+model Report {
+  id         String   @id @default(cuid())
+  postId     String
+  reporterId String
+  post       Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  reporter   User     @relation(fields: [reporterId], references: [id], onDelete: Cascade)
+  reason     String   @db.VarChar(40)
+  details    String?  @db.VarChar(300)
+  status     String   @default("OPEN") @db.VarChar(12) // OPEN | DISMISSED
+  createdAt  DateTime @default(now())
+
+  @@unique([postId, reporterId])
+  @@index([status, createdAt])
+}
+
+/// Histórico de toda recompensa dada/removida. Permite estornar XP/ouro de uma foto
+/// mesmo depois que ela foi apagada.
+model RewardLedger {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  source    String   @db.VarChar(20) // POST | POST_REVERSAL | FIGHT | SEASON | RESPEC
+  refId     String?  @db.VarChar(40)
+  xp        Int      @default(0)
+  gold      Int      @default(0)
+  meta      Json?    // POST: streak anterior (para desfazer se o post do dia for apagado)
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([refId])
+}
+
+model Setting {
+  key       String   @id @db.VarChar(64)
+  value     String   @db.Text
+  updatedAt DateTime @updatedAt
+}
+
+model ModerationLog {
+  id        String   @id @default(cuid())
+  action    String   @db.VarChar(40) // DELETE_USER, CREATE_USER, MARK_FAKE, TOGGLE_SIGNUP...
+  actorId   String?
+  actor     User?    @relation("ModActor", fields: [actorId], references: [id], onDelete: SetNull)
+  targetId  String?
+  target    User?    @relation("ModTarget", fields: [targetId], references: [id], onDelete: SetNull)
+  details   Json?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+model InventoryItem {
+  userId     String
+  itemId     String   @db.VarChar(96) // id da arma ou "armor:<conjunto>:<peça>"
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  pricePaid  Int      @default(0)
+  acquiredAt DateTime @default(now())
+
+  @@id([userId, itemId])
+}
+
+/// Luta automática. O replay completo fica gravado (gzip) para que mudanças
+/// futuras no balanceamento não alterem lutas antigas.
+model Battle {
+  id        String   @id @default(cuid())
+  mode      String   @db.VarChar(12) // friendly | ranked
+  seed      Int
+  map       String   @db.VarChar(24)
+  aId       String?
+  bId       String?
+  a         User?    @relation("BattleA", fields: [aId], references: [id], onDelete: SetNull)
+  b         User?    @relation("BattleB", fields: [bId], references: [id], onDelete: SetNull)
+  aName     String   @db.VarChar(32)
+  bName     String   @db.VarChar(32)
+  winner    Int?     // 0 = A, 1 = B, null = empate
+  duration  Int      // ticks
+  replay    Bytes    @db.MediumBlob
+  result    Json?    // recompensas / PR aplicados
+  createdAt DateTime @default(now())
+
+  @@index([aId, createdAt])
+  @@index([bId, createdAt])
+  @@index([createdAt])
+}
+
+/// Desafio ranqueado. O defensor aceita ou recusa; expira em 24 h.
+model Challenge {
+  id            String   @id @default(cuid())
+  challengerId  String
+  defenderId    String
+  challenger    User     @relation("ChallengeFrom", fields: [challengerId], references: [id], onDelete: Cascade)
+  defender      User     @relation("ChallengeTo", fields: [defenderId], references: [id], onDelete: Cascade)
+  status        String   @default("PENDING") @db.VarChar(12) // PENDING | ACCEPTED | DECLINED | EXPIRED | CANCELLED
+  // posição/PR no momento do desafio (define "acima/abaixo")
+  challengerPos Int
+  defenderPos   Int
+  challengerPr  Int
+  defenderPr    Int
+  battleId      String?  @db.VarChar(40)
+  createdAt     DateTime @default(now())
+  expiresAt     DateTime
+  resolvedAt    DateTime?
+  prTransfer    Int?     // PR que o desafiado perdeu ao recusar ou deixar expirar
+  prGain        Int?     // PR que o desafiante ganhou com a recusa/expiração
+  warnedAt      DateTime? // aviso de "vai expirar" já enviado
+
+  @@index([defenderId, status])
+  @@index([challengerId, createdAt])
+  @@index([challengerId, status])
+}
+
+model Season {
+  id        String   @id @default(cuid())
+  number    Int      @unique
+  name      String   @db.VarChar(64)
+  startsAt  DateTime
+  endsAt    DateTime
+  status    String   @default("ACTIVE") @db.VarChar(10) // ACTIVE | ENDED
+  results   Json?
+  createdAt DateTime @default(now())
+}
+
+/// Notificações no app (e push no celular quando ativado).
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation("NotifTo", fields: [userId], references: [id], onDelete: Cascade)
+  actorId   String?
+  actor     User?     @relation("NotifFrom", fields: [actorId], references: [id], onDelete: Cascade)
+  type      String    @db.VarChar(24) // LIKE | COMMENT | CHALLENGE | CHALLENGE_ACCEPTED | CHALLENGE_DECLINED | FAKE | SEASON
+  postId    String?   @db.VarChar(40)
+  battleId  String?   @db.VarChar(40)
+  challengeId String? @db.VarChar(40)
+  groupId   String?   @db.VarChar(40)
+  text      String?   @db.VarChar(300)
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, createdAt])
+  @@index([userId, readAt])
+}
+
+model PushSubscription {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  endpoint  String   @unique @db.VarChar(500)
+  p256dh    String   @db.VarChar(200)
+  auth      String   @db.VarChar(100)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+/// Presente (do admin ou espólio de evento). Com motivo → aparece o aviso grande na tela.
+model Gift {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation("GiftTo", fields: [userId], references: [id], onDelete: Cascade)
+  kind      String    @db.VarChar(6)  // XP | GOLD | ITEM
+  amount    Int       @default(0)
+  itemId    String?   @db.VarChar(96)
+  reason    String?   @db.VarChar(200)
+  popup     Boolean   @default(false) // mostrar o aviso grande
+  seenAt    DateTime?
+  showAt    DateTime? // espólio de evento: só aparece depois que a luta termina de passar (sem spoiler)
+  source    String    @default("ADMIN") @db.VarChar(8) // ADMIN | EVENT
+  eventId   String?   @db.VarChar(40)
+  byId      String?   @db.VarChar(40)
+  createdAt DateTime  @default(now())
+
+  @@index([userId, popup, seenAt])
+  @@index([createdAt])
+}
+
+/// Evento de boss (secreto até começar). bossId = chave do catálogo do servidor.
+model BossEvent {
+  id             String    @id @default(cuid())
+  bossId         String    @db.VarChar(40)
+  startsAt       DateTime
+  endsAt         DateTime
+  endedAt        DateTime? // encerrado antes da hora
+  attempts       Int       @default(3)  // por jogador
+  teamSize       Int       @default(1)  // 1 a 10
+  lootItemId     String?   @db.VarChar(96)
+  lootGold       Int       @default(0)
+  lootXp         Int       @default(0)
+  lootText       String?   @db.VarChar(300)
+  winChance      Int       @default(40) // %, só o admin vê
+  announcedAt    DateTime?
+  lastReminderAt DateTime?
+  createdAt      DateTime  @default(now())
+  runs           BossRun[]
+
+  @@index([startsAt, endsAt])
+}
+
+/// Time montado para enfrentar o boss (sala). O líder convida; ao lutar, vira uma luta gravada.
+model BossRun {
+  id        String    @id @default(cuid())
+  eventId   String
+  event     BossEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  leaderId  String
+  leader    User      @relation("RunLeader", fields: [leaderId], references: [id], onDelete: Cascade)
+  status    String    @default("FORMING") @db.VarChar(10) // FORMING | FOUGHT | CANCELLED
+  won       Boolean?
+  seed      Int       @default(0)
+  replay    Bytes?    @db.MediumBlob
+  duration  Int       @default(0) // ticks
+  foughtAt  DateTime?
+  createdAt DateTime  @default(now())
+  members   BossRunMember[]
+
+  @@index([eventId, status])
+}
+
+model BossRunMember {
+  runId     String
+  run       BossRun  @relation(fields: [runId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accepted  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@id([runId, userId])
+  @@index([userId])
+}
