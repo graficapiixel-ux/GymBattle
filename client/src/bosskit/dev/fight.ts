@@ -12,6 +12,7 @@ window.setupFight = (r, w, h) => {
   c.style.height = h + 'px';
   document.body.appendChild(c);
   b = new BossBattle(c, r, {});
+  (window as unknown as { __bb: unknown }).__bb = b;
   b.resize();
 };
 window.frameAt = (T) => {

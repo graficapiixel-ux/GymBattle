@@ -18,24 +18,39 @@ import { CombatMusic, trackFor } from '../game/audio/music';
 import { bodyFor } from './bodies';
 import { FX } from './fx';
 import { MOVES } from './duelist';
+import { FLYERS, mobilityOf, type Mobility } from './mobility';
 import type { DuelFrame, DuelMoveCtx } from './duelist/types';
 import type { Anchors, DrawState, V } from './types';
 import { TAU, clamp, crescent, godRays, h01, mixHex, orb, rgrad, sm, sparks } from './util';
 
+/** Largura do mundo do DUELISTA (do tamanho de um jogador: arena compacta, como antes). */
 export const W = 1000;
-export const H = 600;
+/** Bosses grandes: arena de verdade, larga, com a câmera acompanhando a ação. */
+export const ARENA_W = 2800;
 export const GROUND = 500;
 const FPS = 30;
 const DT = 1 / FPS;
 const GRAV = 1750;
-/** Plataformas flutuantes (só do lado dos jogadores). */
-export const PLATS = [
+export interface Plat {
+  x0: number;
+  x1: number;
+  y: number;
+}
+/** Plataformas do duelista (só do lado dos jogadores). */
+export const PLATS: Plat[] = [
   { x0: 70, x1: 250, y: 392 },
   { x0: 300, x1: 470, y: 318 },
 ];
-const BOSS_HOME = 770;
-/** Bosses que flutuam/descem do céu na entrada. */
-const FLYERS = new Set(['eye', 'spirit', 'deity', 'elemental']);
+/** Plataformas da arena grande: dos dois lados (o boss fica no chão do meio). */
+const ARENA_PLATS: Plat[] = [
+  { x0: 110, x1: 290, y: 392 },
+  { x0: 380, x1: 550, y: 312 },
+  { x0: 800, x1: 960, y: 392 },
+  { x0: 1840, x1: 2000, y: 392 },
+  { x0: 2250, x1: 2420, y: 312 },
+  { x0: 2510, x1: 2690, y: 392 },
+];
+const DUEL_HOME = 770;
 const P_SCALE_LAND = 1.2;
 /** Em pé a câmera abre mais: os jogadores são desenhados um pouco maiores para continuarem legíveis. */
 const P_SCALE_PORT = 1.42;
@@ -45,8 +60,24 @@ const STRIDE = 150;
 /** Avanço (negativo = para a frente) que cada pose de golpe faz o corpo dar. */
 const LUNGE: Partial<Record<string, number>> = { slam: -70, swipe: -90, charge: -190, roar: 12, breath: 20, shoot: 25, cast: 10 };
 const MELEE_POSES = new Set(['slam', 'swipe', 'charge']);
+/** Duração do giro do boss (s). */
+const TURN = 0.3;
 const FALLBACK_AV = {
-  look: { skin: '#8a5a3c', face: 0, hair: 1, hairColor: '#222222', beard: 0, body: 1, height: 1, gender: 0, eyes: '#333333', marks: 0, accessory: 0, top: '#222222', shorts: '#222222' },
+  look: {
+    skin: '#8a5a3c',
+    face: 0,
+    hair: 1,
+    hairColor: '#222222',
+    beard: 0,
+    body: 1,
+    height: 1,
+    gender: 0,
+    eyes: '#333333',
+    marks: 0,
+    accessory: 0,
+    top: '#222222',
+    shorts: '#222222',
+  },
   equipment: { weapon: null, helm: null, chest: null, gloves: null, legs: null },
 };
 
@@ -78,22 +109,48 @@ interface Track {
   at: Float32Array; // quadros desde o início da animação
   vx: Float32Array;
   alpha: Float32Array;
-  /** Boss: passada acumulada, intensidade do andar e velocidade vertical. */
+  /** Boss: passada acumulada, intensidade do andar, velocidade vertical e "no ar". */
   g: Float32Array;
   mv: Float32Array;
   vy: Float32Array;
+  air: Float32Array;
 }
 const mkTrack = (n: number): Track => ({
-  x: new Float32Array(n), y: new Float32Array(n), f: new Int8Array(n), anim: new Uint8Array(n),
-  at: new Float32Array(n), vx: new Float32Array(n), alpha: new Float32Array(n).fill(1),
-  g: new Float32Array(n), mv: new Float32Array(n), vy: new Float32Array(n),
+  x: new Float32Array(n),
+  y: new Float32Array(n),
+  f: new Int8Array(n),
+  anim: new Uint8Array(n),
+  at: new Float32Array(n),
+  vx: new Float32Array(n),
+  alpha: new Float32Array(n).fill(1),
+  g: new Float32Array(n),
+  mv: new Float32Array(n),
+  vy: new Float32Array(n),
+  air: new Float32Array(n),
 });
 
 interface Tp {
   t: number;
   from: V;
   to: V;
+  /** Tamanho do clarão (1 = duelista). */
+  k?: number;
 }
+
+/** Salto/voo do boss grande: arco de x0 até x1. */
+interface Leap {
+  t0: number;
+  dur: number;
+  x0: number;
+  x1: number;
+  y0: number;
+  y1: number;
+  h: number;
+  /** Vira de lado no meio do salto (passou por cima do time). */
+  flip: boolean;
+}
+
+const easeIO = (u: number) => (u < 0.5 ? 2 * u * u : 1 - Math.pow(-2 * u + 2, 2) / 2);
 
 export class BossBattle {
   private ctx: CanvasRenderingContext2D;
@@ -125,13 +182,30 @@ export class BossBattle {
   private targetsAt: V[][] = [];
   private startsAt: V[] = [];
   private everyoneAt: V[][] = [];
+  /** Para que lado o boss olhava quando cada golpe começou (-1 esquerda, 1 direita). */
+  private atkFace: (1 | -1)[] = [];
   private tps: Tp[] = [];
   /** Pisadas do boss (poeira e tremor). */
-  private steps: { t: number; x: number; k: number }[] = [];
+  private steps: { t: number; x: number; k: number; land?: boolean }[] = [];
+  /** Giros do boss (para a animação de virar). */
+  private turns: { t: number; to: 1 | -1 }[] = [];
   private duel: boolean;
   private bk: number;
+  /** Largura do mundo e plataformas desta luta. */
+  private AW: number;
+  private plats: Plat[];
+  private mob: Mobility;
+  private hover: boolean;
+  /** Chega descendo do céu (voadores, alados e o duelista); os outros sobem do chão. */
+  private get entersFromSky() {
+    return this.duel || this.hover || this.mob.wings || FLYERS.has(this.r.boss.arch);
+  }
 
-  constructor(private canvas: HTMLCanvasElement, private r: BossReplay, private opts: BattleOpts = {}) {
+  constructor(
+    private canvas: HTMLCanvasElement,
+    private r: BossReplay,
+    private opts: BattleOpts = {},
+  ) {
     this.ctx = canvas.getContext('2d')!;
     this.pAtks = r.events.filter((e): e is PAtk => e.type === 'pAtk');
     this.bAtks = r.events.filter((e): e is BAtk => e.type === 'bAtk');
@@ -142,6 +216,10 @@ export class BossBattle {
     this.shapes = this.weapons.map((w) => weaponShape(w));
     this.duel = r.boss.arch === 'duelist';
     this.bk = this.duel ? D_SCALE : 0.62 * r.boss.size;
+    this.AW = this.duel ? W : ARENA_W;
+    this.plats = this.duel ? PLATS : ARENA_PLATS;
+    this.mob = mobilityOf(r.boss);
+    this.hover = !this.duel && this.mob.style === 'hover';
     this.N = Math.ceil(r.duration * FPS) + 2;
     this.pt = r.players.map(() => mkTrack(this.N));
     this.bt = mkTrack(this.N);
@@ -203,38 +281,121 @@ export class BossBattle {
 
   // ================================================================== coreografia
 
-  private bossReach(x: number) {
-    return this.duel ? x - 70 : x - 165 * this.bk;
+  /** Distância do centro do boss até onde fica quem bate nele corpo a corpo. */
+  private get reach() {
+    return this.duel ? 70 : 165 * this.bk;
   }
 
   private moveCtx(j: number, p: number): DuelMoveCtx {
     const b = this.bAtks[j];
     const atk = this.r.boss.attacks[b.a];
     return {
-      p, t: p * b.dur, dur: b.dur, start: this.startsAt[j], targets: this.targetsAt[j], everyone: this.everyoneAt[j],
-      ground: GROUND, W, seed: Math.floor(b.t * 100) + 7, color: atk.color, color2: atk.color2,
-      me: this.r.boss.avatar ?? FALLBACK_AV, s: D_SCALE, glow: this.r.boss.pal.glow, accent: this.r.boss.pal.accent,
+      p,
+      t: p * b.dur,
+      dur: b.dur,
+      start: this.startsAt[j],
+      targets: this.targetsAt[j],
+      everyone: this.everyoneAt[j],
+      ground: GROUND,
+      W,
+      seed: Math.floor(b.t * 100) + 7,
+      color: atk.color,
+      color2: atk.color2,
+      me: this.r.boss.avatar ?? FALLBACK_AV,
+      s: D_SCALE,
+      glow: this.r.boss.pal.glow,
+      accent: this.r.boss.pal.accent,
     };
   }
 
   private choreograph() {
     const r = this.r;
     const n = r.players.length;
+    const AW = this.AW;
+    const plats = this.plats;
+    const mob = this.mob;
+    const bk = this.bk;
     const rng = mulberry32((r.seed ^ 0x5bd1e995) >>> 0);
     const R = (a: number, b: number) => a + (b - a) * rng();
     // eventos por jogador
     const myAtks = r.players.map((_, i) => this.pAtks.filter((a) => a.p === i));
     type St = {
-      x: number; y: number; vx: number; vy: number; ground: boolean; f: 1 | -1; anim: number; since: number;
-      goal: number; next: number; hitUntil: number; koed: boolean; recoil: number; dodged: number;
+      x: number;
+      y: number;
+      vx: number;
+      vy: number;
+      ground: boolean;
+      f: 1 | -1;
+      anim: number;
+      since: number;
+      goal: number;
+      next: number;
+      hitUntil: number;
+      koed: boolean;
+      recoil: number;
+      dodged: number;
     };
+    // o time começa à esquerda do boss; na arena grande ele entra mais para o meio
+    const home = this.duel ? DUEL_HOME : AW * 0.6;
+    const teamFront = this.duel ? 330 : home - this.reach - 60;
     const st: St[] = r.players.map((p, i) => {
-      const x = p.style === 'melee' ? 330 - i * 28 : 210 - i * 22;
-      return { x: Math.max(40, x), y: GROUND, vx: 0, vy: 0, ground: true, f: 1, anim: ANIM.idle, since: 0, goal: x, next: R(0.2, 1.2), hitUntil: -1, koed: false, recoil: -1, dodged: -1 };
+      const x = this.duel
+        ? p.style === 'melee'
+          ? teamFront - i * 28
+          : teamFront - 120 - i * 22
+        : p.style === 'melee'
+          ? teamFront - i * 70
+          : teamFront - 320 - i * 80;
+      return {
+        x: Math.max(40, x),
+        y: GROUND,
+        vx: 0,
+        vy: 0,
+        ground: true,
+        f: 1,
+        anim: ANIM.idle,
+        since: 0,
+        goal: x,
+        next: R(0.2, 1.2),
+        hitUntil: -1,
+        koed: false,
+        recoil: -1,
+        dodged: -1,
+      };
     });
     // boss
-    const B = { x: BOSS_HOME, y: FLYERS.has(r.boss.arch) ? GROUND - 70 : GROUND, vx: 0, vy: 0, ground: true, f: -1 as 1 | -1, anim: ANIM.idle as number, since: 0, goal: BOSS_HOME, next: 5, tp: 7, alpha: 1, gait: 0, move: 0, alt: 70, atkX: BOSS_HOME, prep: -1, lastStep: 0 };
-    const fly = FLYERS.has(r.boss.arch);
+    const hoverAlt = 70;
+    const B = {
+      x: home,
+      y: this.hover ? GROUND - hoverAlt : GROUND,
+      vx: 0,
+      vy: 0,
+      ground: true,
+      f: -1 as 1 | -1,
+      anim: ANIM.idle as number,
+      since: 0,
+      goal: home,
+      next: 5,
+      tp: 7,
+      alpha: 1,
+      gait: 0,
+      move: 0,
+      alt: hoverAlt,
+      atkX: home,
+      prep: -1,
+      fin: -1,
+      lastStep: 0,
+      air: 0,
+      leap: null as Leap | null,
+      phase: null as { t0: number; x1: number; f: 1 | -1 } | null,
+      want: -1 as 1 | -1,
+      turnAt: 0,
+      lastSwap: -9,
+    };
+    /** Lado do time em relação ao boss (-1 = time à esquerda). */
+    let side: 1 | -1 = -1;
+    /** Jogadores atravessando para o outro lado (flanco). */
+    const crossing = new Array<boolean>(n).fill(false);
     let atkIdx = 0;
     let activeMove = -1;
 
@@ -244,7 +405,7 @@ export class BossBattle {
         o.since = k;
       }
     };
-    const physics = (o: { x: number; y: number; vx: number; vy: number; ground: boolean }, minX: number, maxX: number, plats = true) => {
+    const physics = (o: { x: number; y: number; vx: number; vy: number; ground: boolean }, minX: number, maxX: number, usePlats = true) => {
       const prevY = o.y;
       if (!o.ground) o.vy += GRAV * DT;
       o.x += o.vx * DT;
@@ -252,10 +413,10 @@ export class BossBattle {
       if (o.ground) {
         o.vx *= 0.86;
         // saiu da beirada da plataforma: cai
-        if (o.y < GROUND - 1 && !PLATS.some((p) => o.x >= p.x0 && o.x <= p.x1 && Math.abs(o.y - p.y) < 2)) o.ground = false;
+        if (o.y < GROUND - 1 && !plats.some((p) => o.x >= p.x0 && o.x <= p.x1 && Math.abs(o.y - p.y) < 2)) o.ground = false;
       } else if (o.vy >= 0) {
-        if (plats) {
-          for (const p of PLATS) {
+        if (usePlats) {
+          for (const p of plats) {
             if (prevY <= p.y + 1 && o.y >= p.y && o.x >= p.x0 && o.x <= p.x1) {
               o.y = p.y;
               o.vy = 0;
@@ -269,8 +430,67 @@ export class BossBattle {
           o.ground = true;
         }
       }
-      if (o.x < minX) (o.x = minX), (o.vx = Math.max(0, o.vx));
-      if (o.x > maxX) (o.x = maxX), (o.vx = Math.min(0, o.vx));
+      if (o.x < minX) ((o.x = minX), (o.vx = Math.max(0, o.vx)));
+      if (o.x > maxX) ((o.x = maxX), (o.vx = Math.min(0, o.vx)));
+    };
+    /** Vivos no instante s. */
+    const aliveP = (s: number) => st.filter((_, i) => !(this.kos.has(i) && this.kos.get(i)! <= s));
+    /** Limites para o boss não esmagar o time contra a parede. */
+    const room = this.duel ? 360 : 520;
+    const bossClamp = (x: number, sd: 1 | -1) =>
+      sd < 0 ? clamp(x, Math.max(200, room + this.reach), AW - 200) : clamp(x, 200, Math.min(AW - 200, AW - room - this.reach));
+    /** Começa um salto/voo do boss. */
+    const startLeap = (s: number, x1: number, h: number, flip: boolean) => {
+      const dist = Math.abs(x1 - B.x);
+      const dur = clamp(0.55 + dist / (mob.wings || this.hover ? 900 : 1100) + h / 900, 0.6, 1.35);
+      const baseY = this.hover ? GROUND - B.alt : GROUND;
+      B.leap = { t0: s, dur, x0: B.x, x1, y0: B.y, y1: baseY, h, flip };
+      B.vx = 0;
+    };
+    /** Troca de lado com o time (cada boss do seu jeito). Devolve true se começou. */
+    const trySwap = (s: number, budget: number) => {
+      if (s - B.lastSwap < 3.5) return false;
+      const team = aliveP(s);
+      if (!team.length) return false;
+      const xs = team.map((o) => o.x);
+      // lado oposto: além do jogador mais distante, na direção do time
+      const far = side < 0 ? Math.min(...xs) : Math.max(...xs);
+      const land = far + side * (this.reach + R(150, 280));
+      const okLand = land > 220 && land < AW - 220;
+      if ((mob.swap === 'leap' || mob.swap === 'fly') && okLand && budget > 1.2) {
+        const h = mob.swap === 'fly' ? Math.max(mob.leapH, 240) : Math.max(mob.leapH, 180) * 0.85;
+        startLeap(s, land, h * (0.85 + rng() * 0.25), true);
+        side = -side as 1 | -1;
+        B.lastSwap = s;
+        return true;
+      }
+      if (mob.swap === 'phase' && okLand && budget > 0.9) {
+        B.phase = { t0: s, x1: land, f: -side as 1 | -1 };
+        side = -side as 1 | -1;
+        B.lastSwap = s;
+        return true;
+      }
+      if (mob.swap === 'players' && budget > 1.05) {
+        // o time flanqueia: corre por baixo/por trás do boss e ele vira em seguida
+        const behind = B.x - side * (this.reach + 260);
+        if (behind < 240 || behind > AW - 240) return false;
+        side = -side as 1 | -1;
+        for (let i = 0; i < n; i++) if (!st[i].koed) crossing[i] = true;
+        B.lastSwap = s;
+        return true;
+      }
+      // time encostado na parede (não dá para passar por cima): o boss recua para o meio e a luta vem atrás
+      if (mob.swap !== 'players' && !okLand && budget > 1.0) {
+        const back = clamp(B.x - side * R(300, 520), 260, AW - 260);
+        if (Math.abs(back - B.x) > 160) {
+          if (mob.leap > 0 || mob.swap === 'leap' || mob.swap === 'fly') startLeap(s, back, Math.max(80, mob.leapH * 0.5), false);
+          else B.goal = back;
+          B.next = s + 2.5;
+          B.lastSwap = s - 1.5;
+          return true;
+        }
+      }
+      return false;
     };
 
     for (let k = 0; k < this.N; k++) {
@@ -283,6 +503,7 @@ export class BossBattle {
         if (!this.everyoneAt[atkIdx].length) this.everyoneAt[atkIdx] = [{ x: 200, y: GROUND }];
         if (!this.targetsAt[atkIdx].length) this.targetsAt[atkIdx] = [this.everyoneAt[atkIdx][0]];
         this.startsAt[atkIdx] = { x: B.x, y: B.y };
+        this.atkFace[atkIdx] = this.duel ? -1 : B.f;
         if (this.duel) activeMove = atkIdx;
         atkIdx++;
       }
@@ -309,7 +530,7 @@ export class BossBattle {
             B.alpha = 1;
             if (B.y < GROUND - 1) B.ground = false;
           }
-          if (s > r.entrance && this.dieAt === null || (this.dieAt !== null && s < this.dieAt)) {
+          if ((s > r.entrance && this.dieAt === null) || (this.dieAt !== null && s < this.dieAt)) {
             if (s >= B.tp && B.ground) {
               // teletransporte: some e aparece em outro lugar
               const to = { x: R(470, 900), y: rng() < 0.3 ? 318 : GROUND };
@@ -340,59 +561,164 @@ export class BossBattle {
           B.f = near ? (near.x < B.x ? -1 : 1) : -1;
         }
       } else {
-        // bosses grandes: andam DE VERDADE (aceleram, freiam, avançam para golpear, recuam para atirar)
+        // ---------------- bosses grandes: andam, disparam, saltam, voam e VIRAM para onde o time está
         const alive = s > r.entrance && (this.dieAt === null || s < this.dieAt);
         const nextAtk = this.bAtks[atkIdx];
-        if (alive) {
-          if (bAtkNow) {
-            // durante o golpe: avanço/recuo do próprio golpe (o corpo continua dando passos)
-            const atk = r.boss.attacks[bAtkNow.a];
-            const p = (s - bAtkNow.t) / bAtkNow.dur;
-            const lunge = LUNGE[atk.pose] ?? 0;
-            const off = lunge * (sm(0.12, 0.45, p) - sm(0.62, 0.98, p));
-            B.goal = clamp(B.atkX + off * this.bk, 520, 900);
-          } else {
+        const vmax = mob.speed;
+        const px = B.x;
+        const py = B.y;
+        B.air = 0;
+        if (B.leap) {
+          // ---- salto / voo em arco
+          const L = B.leap;
+          const u = clamp((s - L.t0) / L.dur);
+          B.x = L.x0 + (L.x1 - L.x0) * easeIO(u);
+          B.y = L.y0 + (L.y1 - L.y0) * u - L.h * 4 * u * (1 - u);
+          B.air = Math.sin(Math.PI * Math.min(1, u * 1.15));
+          if (L.flip && u >= 0.5 && B.want === B.f) {
+            // passou por cima do time: vira no ar
+            B.want = side;
+            B.turnAt = s;
+          }
+          if (u >= 1) {
+            B.leap = null;
+            B.x = L.x1;
+            B.y = L.y1;
             B.atkX = B.x;
-            if (nextAtk && nextAtk.t - s < 1.1) {
-              // prepara o próximo golpe: corpo a corpo chega perto, à distância se afasta
-              const pose = r.boss.attacks[nextAtk.a].pose;
-              if (B.prep !== nextAtk.t) {
+            B.goal = B.x;
+            if (!this.hover) this.steps.push({ t: s, x: B.x, k: 1, land: true });
+          }
+          B.vx = (B.x - px) / DT;
+          B.vy = (B.y - py) / DT;
+        } else if (B.phase) {
+          // ---- some e reaparece do outro lado do time
+          const q = (s - B.phase.t0) / 0.7;
+          B.alpha = q < 0.4 ? 1 - q / 0.4 : q < 0.6 ? 0 : clamp((q - 0.6) / 0.4);
+          if (q >= 0.5 && B.x !== B.phase.x1) {
+            this.tps.push({ t: s - 0.2, from: { x: B.x, y: B.y - 60 * bk }, to: { x: B.phase.x1, y: B.y - 60 * bk }, k: 2.2 * bk });
+            B.x = B.phase.x1;
+            B.f = B.phase.f;
+            B.want = B.phase.f;
+            this.turns.push({ t: s - TURN, to: B.f });
+            B.atkX = B.goal = B.x;
+          }
+          if (q >= 1) {
+            B.phase = null;
+            B.alpha = 1;
+          }
+          B.vx = 0;
+        } else {
+          if (alive) {
+            if (bAtkNow) {
+              // durante o golpe: avanço/recuo do próprio golpe, na direção para onde olha
+              const atk = r.boss.attacks[bAtkNow.a];
+              const p = (s - bAtkNow.t) / bAtkNow.dur;
+              const lunge = LUNGE[atk.pose] ?? 0;
+              const off = -B.f * lunge * (sm(0.12, 0.45, p) - sm(0.62, 0.98, p));
+              B.goal = clamp(B.atkX + off * bk, 160, AW - 160);
+            } else {
+              B.atkX = B.x;
+              const budget = nextAtk ? nextAtk.t - s : 99;
+              const prepT = mob.swap === 'players' ? 2.2 : 1.7;
+              // reta final antes do golpe: posiciona de vez (ágil decide em cima da hora)
+              const finalT = mob.style === 'skitter' ? 0.55 : mob.style === 'stomp' ? 1.3 : 0.9;
+              if (nextAtk && budget < prepT && B.prep !== nextAtk.t) {
+                // às vezes troca de lado com o time antes do golpe (ou quando o time está encurralado)
                 B.prep = nextAtk.t;
-                B.goal = MELEE_POSES.has(pose) ? clamp(B.x - R(60, 110), 560, 860) : pose === 'roar' ? B.x : clamp(B.x + R(30, 80), 600, 880);
+                const team = aliveP(s);
+                const xs = team.map((o) => o.x);
+                const near = xs.length ? (side < 0 ? Math.max(...xs) : Math.min(...xs)) : B.x + side * 300;
+                const space = side < 0 ? near - 40 : AW - 40 - near;
+                const cramped = side < 0 ? B.x < room + this.reach + 80 : B.x > AW - room - this.reach - 80;
+                if (rng() < mob.swapChance || cramped || space < 260) trySwap(s, budget);
               }
-            } else if (s >= B.next) {
-              B.goal = fly ? R(600, 880) : R(600, 860);
-              B.next = s + R(1.4, 3.0);
-              if (fly) B.alt = R(30, 150);
+              if (B.leap || B.phase) {
+                /* já está saltando/sumindo */
+              } else if (nextAtk && budget < finalT) {
+                if (B.fin !== nextAtk.t) {
+                  // corpo a corpo chega perto (sem passar por cima de ninguém); à distância se afasta
+                  B.fin = nextAtk.t;
+                  const pose = r.boss.attacks[nextAtk.a].pose;
+                  const xs = aliveP(s).map((o) => o.x);
+                  const near = xs.length ? (side < 0 ? Math.max(...xs) : Math.min(...xs)) : B.x + side * 300;
+                  if (MELEE_POSES.has(pose)) {
+                    const tgt = near - side * (this.reach + R(10, 60));
+                    const u = clamp((tgt - B.x) * side, -40, 300);
+                    B.goal = bossClamp(B.x + side * u, side);
+                    if (mob.leap > 0 && Math.abs(B.goal - B.x) > 150 && budget > 0.5 && rng() < mob.leap)
+                      startLeap(s, B.goal, mob.leapH * 0.4, false);
+                  } else if (pose !== 'roar') {
+                    B.goal = bossClamp(B.x - side * R(40, 120), side);
+                  } else B.goal = B.x;
+                }
+              } else if (s >= B.next) {
+                // passeio entre os golpes: cada um do seu jeito (finta, arrancada, recuo, salto curto)
+                const fwd = (a: number, b: number) => bossClamp(B.x + side * R(a, b), side);
+                const canLeap = budget > finalT + 1.1;
+                if (mob.style === 'skitter') {
+                  B.goal = fwd(-200, 240);
+                  B.next = s + R(0.35, 0.8);
+                  if (canLeap && mob.leap > 0 && rng() < mob.leap * 0.4) startLeap(s, fwd(-240, 240), mob.leapH * R(0.3, 0.55), false);
+                } else if (mob.style === 'hop') {
+                  const x1 = fwd(-160, 200);
+                  if (canLeap && Math.abs(x1 - B.x) > 30) startLeap(s, x1, mob.leapH * R(0.6, 1), false);
+                  B.next = s + R(0.5, 1.0);
+                } else if (mob.style === 'hover') {
+                  B.goal = fwd(-170, 240);
+                  B.alt = R(40, 170);
+                  B.next = s + R(0.9, 1.8);
+                } else {
+                  B.goal = fwd(-110, 180);
+                  B.next = s + (mob.style === 'stomp' ? R(1.6, 3.0) : R(0.9, 2.0));
+                  if (canLeap && mob.leap > 0 && rng() < mob.leap * 0.3) startLeap(s, fwd(-150, 220), mob.leapH * R(0.4, 0.7), false);
+                }
+                // janela longa sem golpe: chance de cruzar a arena
+                if (!B.leap && budget > 2.6 && rng() < mob.swapChance * 0.35) trySwap(s, budget);
+              }
             }
           }
-          B.atkX = bAtkNow ? B.atkX : B.x;
+          if (!B.leap && !B.phase) {
+            // velocidade com aceleração e frenagem (nada de deslizar em velocidade constante)
+            const dx = B.goal - B.x;
+            const vT = alive || bAtkNow ? Math.sign(dx) * Math.min(vmax * (bAtkNow ? 2.6 : 1), Math.abs(dx) * 2.2) : 0;
+            B.vx += (vT - B.vx) * (1 - Math.exp(-DT * mob.accel));
+            if (Math.abs(dx) < 2 && Math.abs(B.vx) < 8) B.vx *= 0.5;
+            B.x += B.vx * DT;
+            if (this.hover) {
+              const tgtY = GROUND - B.alt - 14 * Math.sin(s * 1.3);
+              const vyT = (tgtY - B.y) * 2.2;
+              B.vy += (vyT - B.vy) * (1 - Math.exp(-DT * 3));
+              B.y += B.vy * DT;
+            } else {
+              B.y = GROUND;
+              B.vy = 0;
+            }
+          }
         }
-        // velocidade com aceleração e frenagem (nada de deslizar em velocidade constante)
-        const vmax = fly ? 150 : 95 / Math.sqrt(r.boss.size);
-        const dx = B.goal - B.x;
-        const vT = alive || bAtkNow ? Math.sign(dx) * Math.min(vmax * (bAtkNow ? 2.6 : 1), Math.abs(dx) * 2.2) : 0;
-        B.vx += (vT - B.vx) * (1 - Math.exp(-DT * (fly ? 3 : 5)));
-        if (Math.abs(dx) < 2 && Math.abs(B.vx) < 8) B.vx *= 0.5;
-        const px = B.x;
-        B.x += B.vx * DT;
-        B.gait += Math.abs(B.x - px) / (STRIDE * this.bk);
-        if (fly) {
-          const tgtY = GROUND - B.alt - 14 * Math.sin(s * 1.3);
-          const vyT = (tgtY - B.y) * 2.2;
-          B.vy += (vyT - B.vy) * (1 - Math.exp(-DT * 3));
-          B.y += B.vy * DT;
-        } else {
-          B.y = GROUND;
-          B.vy = 0;
+        B.x = clamp(B.x, 120, AW - 120);
+        // passada só avança com os pés no chão
+        if (!B.leap) B.gait += Math.abs(B.x - px) / (STRIDE * bk);
+        if (!this.hover && !B.leap) {
           // pisadas (poeira/tremor): a cada meio ciclo de passada
           const step = Math.floor(B.gait * 2);
           if (step !== B.lastStep) {
             B.lastStep = step;
-            if (Math.abs(B.vx) > vmax * 0.25 && s > r.entrance) this.steps.push({ t: s, x: B.x, k: clamp(Math.abs(B.vx) / vmax) });
+            if (Math.abs(B.vx) > vmax * 0.25 && s > r.entrance && mob.heavy > 0)
+              this.steps.push({ t: s, x: B.x, k: clamp(Math.abs(B.vx) / vmax) * mob.heavy });
           }
         }
-        B.move = clamp(Math.abs(B.vx) / vmax);
+        B.move = B.leap ? 0 : clamp(Math.abs(B.vx) / Math.max(60, vmax));
+        // virar para o time (com tempo de reação; nunca no meio de um golpe)
+        if (!bAtkNow && !B.phase && alive) {
+          if (B.want !== side && !(B.leap && B.leap.flip)) {
+            B.want = side;
+            B.turnAt = s + mob.react;
+          }
+          if (B.f !== B.want && s >= B.turnAt) {
+            B.f = B.want;
+            this.turns.push({ t: s, to: B.f });
+          }
+        }
       }
       const bt = this.bt;
       bt.x[k] = B.x;
@@ -405,10 +731,26 @@ export class BossBattle {
       bt.g[k] = this.duel ? 0 : B.gait;
       bt.mv[k] = this.duel ? 0 : B.move;
       bt.vy[k] = B.vy;
+      bt.air[k] = B.air;
 
       // ------------------------------------------------ jogadores
       // duelista: durante um golpe ele pode ir para trás do time; a "frente" do time continua onde ele estava
-      const front = this.duel ? this.bossReach(Math.max(470, activeMove >= 0 ? this.startsAt[activeMove].x : B.x)) : this.bossReach(Math.max(B.x, B.atkX));
+      const sd: 1 | -1 = this.duel ? -1 : side;
+      const refX = this.duel
+        ? Math.max(470, activeMove >= 0 ? this.startsAt[activeMove].x : B.x)
+        : B.leap
+          ? B.leap.x1
+          : B.phase
+            ? B.phase.x1
+            : sd < 0
+              ? Math.max(B.x, B.atkX)
+              : Math.min(B.x, B.atkX);
+      const front = refX + sd * this.reach;
+      /** Limites de x para o jogador i (do lado do time, sem entrar no boss). */
+      const lim = (i: number): [number, number] =>
+        crossing[i] ? [30, AW - 30] : sd < 0 ? [30, Math.max(60, front - 10)] : [Math.min(AW - 60, front + 10), AW - 30];
+      // quem flanqueou já chegou do outro lado?
+      for (let i = 0; i < n; i++) if (crossing[i] && ((st[i].x - B.x) * sd > this.reach + 12 || st[i].koed)) crossing[i] = false;
       // ninguém fica empilhado: quem está no chão e colado no outro se afasta devagar
       for (let i = 0; i < n; i++) {
         for (let j = i + 1; j < n; j++) {
@@ -416,10 +758,11 @@ export class BossBattle {
           const b = st[j];
           if (a.koed || b.koed || Math.abs(a.y - b.y) > 40) continue;
           const dx = b.x - a.x;
-          const gap = 34;
+          // na arena grande cada um tem seu espaço (antes ficava todo mundo colado)
+          const gap = this.duel ? 34 : 72;
           if (Math.abs(dx) >= gap) continue;
           const dir = dx === 0 ? (i % 2 ? 1 : -1) : Math.sign(dx);
-          const push = (gap - Math.abs(dx)) * 0.12;
+          const push = (gap - Math.abs(dx)) * (this.duel ? 0.12 : 0.2);
           a.x -= dir * push;
           b.x += dir * push;
         }
@@ -428,21 +771,44 @@ export class BossBattle {
         const o = st[i];
         const meta = r.players[i];
         const koAt = this.kos.get(i);
-        const maxX = Math.max(60, front - 10);
+        let [minX, maxX] = lim(i);
+        // fora da área permitida (o boss chegou/pousou perto): sai andando rápido, nunca "teleporta"
+        if (!o.koed && !this.duel) {
+          if (o.x > maxX + 1) {
+            o.x -= Math.min(o.x - maxX, 520 * DT);
+            maxX = Math.max(maxX, o.x);
+          } else if (o.x < minX - 1) {
+            o.x += Math.min(minX - o.x, 520 * DT);
+            minX = Math.min(minX, o.x);
+          }
+        }
+        const toBoss: 1 | -1 = B.x < o.x ? -1 : 1;
         if (koAt !== undefined && s >= koAt) {
           if (!o.koed) {
             o.koed = true;
-            o.vx = -230;
+            crossing[i] = false;
+            o.vx = -toBoss * 230;
             o.vy = -380;
             o.ground = false;
             setAnim(o, ANIM.tumble, k);
           }
-          physics(o, 30, maxX + 60, false);
+          physics(o, 30, AW - 30, false);
           if (o.ground) setAnim(o, ANIM.dead, k);
+        } else if (crossing[i]) {
+          // flanco: dispara até o outro lado e salta por cima dos pés do boss
+          const tx = B.x + sd * (this.reach + 60 + i * 30);
+          o.vx += (Math.sign(tx - o.x) * 640 - o.vx) * 0.4;
+          o.f = o.vx > 0 ? 1 : -1;
+          if (o.ground && Math.abs(o.x - B.x) < this.reach + 70 && (o.x - B.x) * sd < 0) {
+            o.vy = -640 - rng() * 120;
+            o.ground = false;
+          }
+          physics(o, 30, AW - 30);
+          setAnim(o, o.ground ? ANIM.dash : o.vy < 0 ? ANIM.jump : ANIM.fall, k);
         } else {
           const hit = this.bAtks.find((b) => b.hitAt > s - DT && b.hitAt <= s && b.targets.includes(i));
           if (hit) {
-            o.vx = -(230 + rng() * 120);
+            o.vx = -toBoss * (230 + rng() * 120);
             o.vy = -320 - rng() * 120;
             o.ground = false;
             o.hitUntil = s + 0.6;
@@ -452,19 +818,22 @@ export class BossBattle {
           // na mira de um golpe do boss: não sai do lugar até levar (os efeitos miram onde ele estava)
           const pinned = this.bAtks.some((b) => s >= b.t && s < b.hitAt + 0.02 && b.targets.includes(i));
           if (s < o.hitUntil) {
-            physics(o, 30, maxX);
+            physics(o, minX, maxX);
             if (o.ground && s > o.hitUntil - 0.25) setAnim(o, ANIM.land, k);
           } else if (a && pinned) {
             // ataca do lugar mesmo
             o.vx *= 0.5;
-            o.f = B.x < o.x ? -1 : 1;
-            physics(o, 30, maxX);
+            o.f = toBoss;
+            physics(o, minX, maxX);
             setAnim(o, a.slot === 2 ? ANIM.attack2 : ANIM.attack1, k);
           } else if (a) {
             const q = (s - a.t) / a.dur;
-            o.f = B.x < o.x ? -1 : 1;
+            o.f = toBoss;
             if (meta.style === 'melee') {
-              const tx = this.duel ? (B.x < o.x ? B.x + 60 : B.x - 60) : this.bossReach(B.x) - 20;
+              // cada um bate de um ponto (não empilham todos no mesmo lugar)
+              const tx = this.duel ? (B.x < o.x ? B.x + 60 : B.x - 60) : front + sd * (20 + (i % 3) * 38);
+              const lo = Math.min(minX, tx - 30);
+              const hi = Math.max(maxX, tx + 30);
               if (q < 0.3) {
                 const left = Math.max(0.05, (0.3 - q) * a.dur);
                 o.vx = clamp((tx - o.x) / left, -900, 900);
@@ -473,20 +842,20 @@ export class BossBattle {
                   o.ground = false;
                 }
                 setAnim(o, o.ground ? ANIM.dash : ANIM.jump, k);
-                physics(o, 30, tx + 30);
+                physics(o, lo, hi);
               } else if (q < 0.8) {
                 o.vx *= 0.4;
                 setAnim(o, a.slot === 2 ? ANIM.attack2 : ANIM.attack1, k);
-                physics(o, 30, tx + 30);
+                physics(o, lo, hi);
               } else {
                 if (o.recoil !== a.t) {
                   o.recoil = a.t;
-                  o.vx = -300 - rng() * 120;
+                  o.vx = sd * (300 + rng() * 120);
                   o.vy = -430;
                   o.ground = false;
                 }
                 setAnim(o, ANIM.jump, k);
-                physics(o, 30, maxX);
+                physics(o, minX, maxX);
               }
             } else {
               if (a.slot === 2 && o.ground && q < 0.06) {
@@ -495,13 +864,13 @@ export class BossBattle {
               }
               o.vx *= 0.7;
               setAnim(o, a.slot === 2 ? ANIM.attack2 : ANIM.attack1, k);
-              physics(o, 30, maxX);
+              physics(o, minX, maxX);
             }
           } else if (this.bAtks.some((b) => s >= b.t && s < b.hitAt && b.targets.includes(i))) {
             // está na mira: fica (quase) parado e leva o golpe
             o.vx *= 0.8;
-            o.f = 1;
-            physics(o, 30, maxX);
+            o.f = toBoss;
+            physics(o, minX, maxX);
             setAnim(o, o.ground ? ANIM.idle : o.vy < 0 ? ANIM.jump : ANIM.fall, k);
           } else {
             // esquiva de golpes que não são para ele
@@ -513,25 +882,33 @@ export class BossBattle {
               o.ground = false;
             }
             if (s >= o.next) {
-              const zone = meta.style === 'melee' ? [180, maxX - 20] : [40, Math.min(maxX - 40, 420)];
+              // zona do time: corpo a corpo perto da frente do boss; à distância mais para trás
+              const zone: [number, number] = this.duel
+                ? meta.style === 'melee'
+                  ? [180, maxX - 20]
+                  : [40, Math.min(maxX - 40, 420)]
+                : meta.style === 'melee'
+                  ? [40, 420]
+                  : [300, 860];
               // escolhe um lugar que não esteja colado no de outro jogador
               for (let tries = 0; tries < 5; tries++) {
-                o.goal = R(zone[0], Math.max(zone[0] + 10, zone[1]));
-                if (!st.some((q, j) => j !== i && !q.koed && Math.abs(q.goal - o.goal) < 46)) break;
+                if (this.duel) o.goal = R(zone[0], Math.max(zone[0] + 10, zone[1]));
+                else o.goal = clamp(front + sd * R(zone[0], zone[1]), 40, AW - 40);
+                if (!st.some((q, j) => j !== i && !q.koed && Math.abs(q.goal - o.goal) < (this.duel ? 46 : 110))) break;
               }
               o.next = s + R(0.6, 1.5);
               if (o.ground && rng() < 0.4) {
-                const onPlat = PLATS.find((p) => o.goal >= p.x0 && o.goal <= p.x1);
+                const onPlat = plats.find((p) => o.goal >= p.x0 && o.goal <= p.x1);
                 o.vy = onPlat ? (onPlat.y < 350 ? -720 : -640) : -520;
                 o.ground = false;
               }
             }
             const tvx = Math.sign(o.goal - o.x) * Math.min(270, Math.abs(o.goal - o.x) * 4);
             o.vx += (tvx - o.vx) * 0.2;
-            physics(o, 30, maxX);
+            physics(o, minX, maxX);
             if (!o.ground) setAnim(o, o.vy < 0 ? ANIM.jump : ANIM.fall, k);
             else setAnim(o, Math.abs(o.vx) > 45 ? ANIM.run : ANIM.idle, k);
-            o.f = Math.abs(o.vx) > 45 && !(!o.ground) ? (o.vx > 0 ? 1 : -1) : 1;
+            o.f = Math.abs(o.vx) > 45 && o.ground ? (o.vx > 0 ? 1 : -1) : toBoss;
           }
         }
         const t = this.pt[i];
@@ -543,7 +920,23 @@ export class BossBattle {
         t.vx[k] = o.vx;
       }
     }
+    this.turns.sort((a, b) => a.t - b.t);
     this.computeCamera();
+  }
+
+  /** Para onde o boss olha no instante T, com o giro animado: -1..1 (escala x do desenho = -isto). */
+  private faceAt(T: number): number {
+    if (this.duel) return -1;
+    let last: { t: number; to: 1 | -1 } | null = null;
+    for (const tr of this.turns) {
+      if (tr.t > T) break;
+      last = tr;
+    }
+    if (!last) return -1;
+    const u = clamp((T - last.t) / TURN);
+    // vira "de lado" passando pelo perfil fino (como um papel girando), sem nunca sumir de vez
+    const v = -last.to * Math.cos(Math.PI * sm(0, 1, u));
+    return Math.sign(v || last.to) * Math.max(0.12, Math.abs(v));
   }
 
   /** Locomoção do boss interpolada (para o desenho do corpo). */
@@ -553,7 +946,9 @@ export class BossBattle {
     const k = Math.floor(fk);
     const u = fk - k;
     const L = (a: Float32Array) => a[k] + (a[k + 1] - a[k]) * u;
-    return { move: L(tr.mv), gait: L(tr.g), vx: this.duel ? 0 : L(tr.vx), vy: L(tr.vy) };
+    // o desenho é sempre "olhando para a esquerda": a velocidade vai no referencial dele
+    const f = Math.sign(this.faceAt(T)) || -1;
+    return { move: L(tr.mv), gait: L(tr.g), vx: this.duel ? 0 : -f * L(tr.vx), vy: L(tr.vy), air: L(tr.air) };
   }
 
   /** Posição interpolada de uma trilha no instante T (s). */
@@ -585,8 +980,13 @@ export class BossBattle {
     }
     this.kos.forEach((t, i) => t <= T && (ph[i].ko = true));
     return {
-      t: T, duration: this.r.duration, bossHp: Math.max(0, this.r.bossHp - dmg), bossMax: this.r.bossHp, players: ph,
-      ended: T >= this.endAt, won: this.r.won,
+      t: T,
+      duration: this.r.duration,
+      bossHp: Math.max(0, this.r.bossHp - dmg),
+      bossMax: this.r.bossHp,
+      players: ph,
+      ended: T >= this.endAt,
+      won: this.r.won,
     };
   }
 
@@ -604,14 +1004,23 @@ export class BossBattle {
     const base: DrawState = { t: T, anim: 'idle', p: 0, pose: 'roar', hurt, rage, ...loc };
     if (T < r.entrance) {
       const k = sm(0.4, 2.3, T);
-      const fly = FLYERS.has(r.boss.arch) || this.duel;
+      const fly = this.entersFromSky;
       const dy = fly ? -(1 - k) * 520 : (1 - k) * 420;
-      if (T > 2.4 && T < 4.0) return { st: { ...base, anim: 'attack', pose: 'roar', p: (T - 2.4) / 1.6, hurt: 0 }, atk: null, j: -1, alpha: 1, dy };
-      return { st: { ...base, hurt: 0 }, atk: null, j: -1, alpha: clamp(T / 0.6), dy };
+      // quem tem asas chega voando (batendo as asas) e pousa
+      const air = this.mob.wings && !this.duel ? 1 - sm(1.9, 2.35, T) : 0;
+      if (T > 2.4 && T < 4.0)
+        return { st: { ...base, anim: 'attack', pose: 'roar', p: (T - 2.4) / 1.6, hurt: 0, air }, atk: null, j: -1, alpha: 1, dy };
+      return { st: { ...base, hurt: 0, air }, atk: null, j: -1, alpha: clamp(T / 0.6), dy };
     }
     if (this.dieAt !== null && T >= this.dieAt) {
       const p = clamp((T - this.dieAt) / 2.6);
-      return { st: { ...base, anim: 'death', p, hurt: p < 0.6 ? (Math.sin(p * 40) > 0 ? 0.8 : 0) : 0 }, atk: null, j: -1, alpha: 1 - sm(0.55, 1, p), dy: sm(0.4, 1, p) * 40 };
+      return {
+        st: { ...base, anim: 'death', p, hurt: p < 0.6 ? (Math.sin(p * 40) > 0 ? 0.8 : 0) : 0 },
+        atk: null,
+        j: -1,
+        alpha: 1 - sm(0.55, 1, p),
+        dy: sm(0.4, 1, p) * 40,
+      };
     }
     for (let j = 0; j < this.bAtks.length; j++) {
       const b = this.bAtks[j];
@@ -637,7 +1046,7 @@ export class BossBattle {
     const rt = new Float32Array(N);
     const n = this.r.players.length;
     const half = this.duel ? 60 : 200 * this.bk;
-    const tall = this.duel ? 160 : 340 * this.bk;
+    const tall = this.duel ? 160 : 390 * this.bk;
     for (let k = 0; k < N; k++) {
       const s = k / FPS;
       let a = Infinity;
@@ -655,7 +1064,7 @@ export class BossBattle {
       const by = this.bt.y[k];
       if (this.bt.alpha[k] > 0.2 || !this.duel) {
         a = Math.min(a, bx - half);
-        b = Math.max(b, bx + half * 0.8);
+        b = Math.max(b, bx + half);
         top = Math.min(top, by - tall);
       }
       if (!isFinite(a)) {
@@ -673,7 +1082,22 @@ export class BossBattle {
       for (let k = N - 2; k >= 0; k--) out[k] = out[k + 1] + (out[k] - out[k + 1]) * al;
       return out;
     };
-    this.cam = { x: smooth(rx, 0.35), w: smooth(rw, 0.6), top: smooth(rt, 0.5), bx: smooth(this.bt.x, 0.45) };
+    // picos (salto alto, time espalhado) não podem ser "apagados" pela média: segura o pico por ~0,5 s antes de suavizar
+    const hold = (src: Float32Array, win: number, pick: (a: number, b: number) => number) => {
+      const out = new Float32Array(N);
+      for (let k = 0; k < N; k++) {
+        let v = src[k];
+        for (let j = Math.max(0, k - win); j <= Math.min(N - 1, k + win); j++) v = pick(v, src[j]);
+        out[k] = v;
+      }
+      return out;
+    };
+    this.cam = {
+      x: smooth(rx, 0.35),
+      w: smooth(hold(rw, 12, Math.max), 0.45),
+      top: smooth(hold(rt, 15, Math.min), 0.3),
+      bx: smooth(this.bt.x, this.duel ? 0.45 : 0.1),
+    };
   }
 
   private camera(T: number, cw: number, ch: number) {
@@ -687,15 +1111,16 @@ export class BossBattle {
     const port = this.portrait;
     const size = this.r.boss.size;
     // celular em pé: abre mais (antes cortava os jogadores e ficava "colado" no boss)
-    const minW = port ? (this.duel ? 560 : 640) : this.duel ? 720 : 820;
-    const maxW = port ? (this.duel ? 700 : 740 + 50 * size) : W + 120;
+    const minW = port ? (this.duel ? 560 : 540) : this.duel ? 720 : 900;
+    // celular em pé: fecha mais na ação (quem sai do quadro vira setinha na borda)
+    const maxW = port ? (this.duel ? 700 : 680 + 40 * size) : this.duel ? W + 120 : 1280 + 60 * size;
     let viewW = clamp(w0 + (port ? 60 : 140), minW, maxW);
-    const gy = port ? 0.76 : 0.85; // onde fica o chão na tela
+    const gy = port ? (this.duel ? 0.76 : 0.8) : 0.85; // onde fica o chão na tela
     let kk = cw / viewW;
     // garante que o alto da ação cabe (boss no céu, pulos)
-    const need = GROUND - top + 30;
+    const need = GROUND - top + (this.duel ? 30 : 70); // + espaço da barra de vida do boss
     if (need > (ch / kk) * gy) {
-      kk = Math.max((ch * gy) / need, cw / (maxW * 1.25));
+      kk = Math.max((ch * gy) / need, cw / (maxW * (port ? 1.2 : 1.6)));
       viewW = cw / kk;
     }
     const viewH = ch / kk;
@@ -703,8 +1128,15 @@ export class BossBattle {
     let cx = cx0;
     // se não couber todo mundo, o boss continua inteiro na tela e entram os jogadores mais perto
     // dele (transição contínua: só desloca quando precisa)
-    if (!this.duel) cx = Math.max(cx0, L(this.cam.bx) + 200 * this.bk - viewW / 2);
-    cx = viewW >= W + 2 * margin ? W / 2 : clamp(cx, viewW / 2 - margin, W - viewW / 2 + margin);
+    if (!this.duel) {
+      const bx = L(this.cam.bx);
+      const half = 250 * this.bk + 20;
+      const lo = bx + half - viewW / 2;
+      const hi = bx - half + viewW / 2;
+      cx = lo <= hi ? clamp(cx0, lo, hi) : bx;
+    }
+    const AW = this.AW;
+    cx = viewW >= AW + 2 * margin ? AW / 2 : clamp(cx, viewW / 2 - margin, AW - viewW / 2 + margin);
     return { k: kk, ox: -(cx - viewW / 2), oy: viewH * gy - GROUND };
   }
 
@@ -719,7 +1151,11 @@ export class BossBattle {
     const bs = this.bossState(T);
     // pisadas pesadas tremem a tela
     const size = this.r.boss.size;
-    for (const st of this.steps) if (T - st.t >= 0 && T - st.t < 0.06 && size >= 1) this.shakeNow = Math.max(this.shakeNow, 0.1 * st.k * size);
+    for (const st of this.steps) {
+      if (T - st.t < 0 || T - st.t >= 0.06) continue;
+      const amt = st.land ? 0.04 + 0.24 * this.mob.heavy * size : size >= 1 ? 0.1 * st.k * size : 0;
+      this.shakeNow = Math.max(this.shakeNow, amt);
+    }
     const shake = this.shakeNow;
     const dtR = this.lastT >= 0 && T > this.lastT ? Math.min(0.1, T - this.lastT) : 1 / 60;
     this.shakeNow *= Math.pow(0.85, dtR * 60);
@@ -733,13 +1169,14 @@ export class BossBattle {
     const sy = shake ? (Math.sin(T * 83 + 1.3) * 0.6 + Math.sin(T * 127 + 0.2) * 0.4) * 8 * shake : 0;
     ctx.translate(ox + sx, oy + sy);
 
-    this.drawBackground(ctx, T, viewH, ox, oy);
+    this.drawBackground(ctx, T, cw / k, viewH, ox, oy);
     this.drawPlatforms(ctx, T);
     this.drawSteps(ctx, T);
 
     // ---- boss
     const B = this.at(this.bt, T);
     const bk = this.bk;
+    const face = this.faceAt(T);
     const bx = B.x;
     const by = B.y + bs.dy;
     let A: Anchors = { mouth: { x: -120, y: -200 }, hand: { x: -100, y: -60 }, core: { x: 0, y: -150 }, top: -300, halfW: 150 };
@@ -762,19 +1199,23 @@ export class BossBattle {
       this.drawTeleports(ctx, T);
       this.drawDuelist(ctx, T, bs, duelFrame, B.x, by, B);
     } else {
+      this.drawTeleports(ctx, T);
       ctx.save();
-      ctx.globalAlpha = bs.alpha;
+      ctx.globalAlpha = bs.alpha * B.alpha;
       ctx.translate(bx, by);
-      if (T < this.r.entrance && !FLYERS.has(this.r.boss.arch)) {
+      if (T < this.r.entrance && !this.entersFromSky) {
         ctx.beginPath();
         ctx.rect(-600, -900, 1200, 900);
         ctx.clip();
       }
-      ctx.fillStyle = 'rgba(0,0,0,0.35)';
+      // sombra no chão (encolhe quando ele está no alto)
+      const lift = clamp((GROUND - by) / 420);
+      ctx.fillStyle = `rgba(0,0,0,${0.35 * (1 - lift * 0.6)})`;
       ctx.beginPath();
-      ctx.ellipse(0, GROUND - by + 4, 200 * bk, 22 * bk, 0, 0, TAU);
+      ctx.ellipse(0, GROUND - by + 4, 200 * bk * (1 - lift * 0.45), 22 * bk * (1 - lift * 0.45), 0, 0, TAU);
       ctx.fill();
-      ctx.scale(bk, bk);
+      // o desenho olha para a esquerda; virado para a direita, espelha (com o giro animado)
+      ctx.scale(-face * bk, bk);
       try {
         A = bodyFor(this.r.boss.arch)(ctx, this.r.boss, bs.st);
       } catch {
@@ -784,7 +1225,7 @@ export class BossBattle {
     }
     const bossX = duelFrame ? duelFrame.x : bx;
     const bossY = duelFrame ? duelFrame.y : by;
-    const toWorld = (v: V): V => ({ x: bossX + v.x * (this.duel ? 1 : bk), y: bossY + v.y * (this.duel ? 1 : bk) });
+    const toWorld = (v: V): V => ({ x: bossX + v.x * (this.duel ? 1 : -face * bk), y: bossY + v.y * (this.duel ? 1 : bk) });
     const core = toWorld(A.core);
 
     if (this.dieAt !== null && T >= this.dieAt) this.drawDeath(ctx, T - this.dieAt, core, A, this.duel ? 1 : bk);
@@ -800,11 +1241,27 @@ export class BossBattle {
         let s = 0;
         if (this.duel && mctx && duelFrame) s = MOVES[atk.move ?? 'm01'].front(ctx, mctx, duelFrame);
         else {
-          const targets = this.targetsAt[bs.j].map((p) => ({ x: p.x, y: p.y - 50 * this.ps }));
+          // os efeitos foram feitos com o time à esquerda: virado para a direita, desenha espelhado
+          const mir = this.atkFace[bs.j] === 1;
+          const c = this.startsAt[bs.j].x;
+          const m = (v: V): V => (mir ? { x: 2 * c - v.x, y: v.y } : v);
+          const targets = this.targetsAt[bs.j].map((p) => m({ x: p.x, y: p.y - 50 * this.ps }));
+          ctx.save();
+          if (mir) ctx.transform(-1, 0, 0, 1, 2 * c, 0);
           s = FX[atk.fx](ctx, {
-            atk, p: bs.st.p, t: T - bs.atk.t, from: toWorld(A.mouth), hand: toWorld(A.hand), core, targets, ground: GROUND, W,
-            seed: Math.floor(bs.atk.t * 100), size: this.r.boss.size,
+            atk,
+            p: bs.st.p,
+            t: T - bs.atk.t,
+            from: m(toWorld(A.mouth)),
+            hand: m(toWorld(A.hand)),
+            core: m(core),
+            targets,
+            ground: GROUND,
+            W: this.AW,
+            seed: Math.floor(bs.atk.t * 100),
+            size: this.r.boss.size,
           });
+          ctx.restore();
         }
         this.shakeNow = Math.max(this.shakeNow, s);
       } catch {
@@ -817,7 +1274,16 @@ export class BossBattle {
       try {
         const s = FX.roar(ctx, {
           atk: { id: 'enter', name: '', fx: 'roar', pose: 'roar', color: this.r.boss.pal.glow, color2: '#ffffff', aoe: true, dur: 1.8 },
-          p: 0.3 + p * 0.6, t: p * 1.8, from: toWorld(A.mouth), hand: toWorld(A.hand), core, targets: [], ground: GROUND, W, seed: 3, size: this.r.boss.size,
+          p: 0.3 + p * 0.6,
+          t: p * 1.8,
+          from: toWorld(A.mouth),
+          hand: toWorld(A.hand),
+          core,
+          targets: [],
+          ground: GROUND,
+          W: this.AW,
+          seed: 3,
+          size: this.r.boss.size,
         });
         this.shakeNow = Math.max(this.shakeNow, s * 0.8);
       } catch {
@@ -873,50 +1339,81 @@ export class BossBattle {
     }
   }
 
-  private drawBackground(ctx: CanvasRenderingContext2D, T: number, viewH: number, ox: number, oy: number) {
+  /**
+   * Fundo com profundidade (parallax). Tudo é ancorado no MUNDO: as montanhas são
+   * amostradas sempre nos mesmos pontos, então o contorno não "treme" quando a câmera anda.
+   */
+  private drawBackground(ctx: CanvasRenderingContext2D, T: number, viewW: number, viewH: number, ox: number, oy: number) {
     const bg = this.r.boss.bg;
-    const L = -Math.abs(ox) - 600;
-    const Wd = W + Math.abs(ox) * 2 + 1200;
+    const AW = this.AW;
+    const vx0 = -ox;
+    const vx1 = -ox + viewW;
+    const L = vx0 - 80;
+    const Rr = vx1 + 80;
     const top = -oy - 10;
     const g = ctx.createLinearGradient(0, top, 0, GROUND);
     g.addColorStop(0, bg.sky[0]);
     g.addColorStop(1, bg.sky[1]);
     ctx.fillStyle = g;
-    ctx.fillRect(L, top, Wd, viewH + 40);
+    ctx.fillRect(L, top, Rr - L, viewH + 40);
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    ctx.fillStyle = rgrad(ctx, BOSS_HOME, GROUND - 200, 420, bg.fog + '44', 'transparent');
-    ctx.fillRect(BOSS_HOME - 450, GROUND - 650, 900, 700);
+    ctx.fillStyle = rgrad(ctx, AW / 2, GROUND - 220, AW * 0.55, bg.fog + '40', 'transparent');
+    ctx.fillRect(L, GROUND - 900, Rr - L, 950);
     ctx.restore();
-    for (let layer = 0; layer < 2; layer++) {
-      ctx.fillStyle = mixHex(bg.sky[1], '#000000', 0.35 + layer * 0.25);
+    // 3 camadas de morros: as do fundo andam menos que a câmera
+    const cx = (vx0 + vx1) / 2;
+    const STEP = 48;
+    for (let layer = 0; layer < 3; layer++) {
+      const pf = [0.22, 0.42, 0.66][layer];
+      const shift = (cx - AW / 2) * (1 - pf);
+      const hAt = (xs: number) => {
+        const c = Math.floor(xs / STEP);
+        const u = xs / STEP - c;
+        const a = h01(c + 5000, layer + 3);
+        const b = h01(c + 5001, layer + 3);
+        const k = u * u * (3 - 2 * u);
+        return (a + (b - a) * k) * (110 - layer * 25) + Math.sin(xs * 0.006 + layer * 2) * 26;
+      };
+      ctx.fillStyle = mixHex(bg.sky[1], '#000000', 0.3 + layer * 0.17);
       ctx.beginPath();
-      ctx.moveTo(L, GROUND);
-      for (let x = L; x <= L + Wd; x += 40) {
-        const hgt = 60 + layer * 30 + h01(Math.floor((x + 3000) / 40), layer + 3) * (90 - layer * 30) + Math.sin(x * 0.01 + layer) * 20;
-        ctx.lineTo(x, GROUND - 40 - hgt + layer * 60);
+      ctx.moveTo(L, GROUND + 2);
+      const xs0 = Math.floor((L - shift) / 16) * 16;
+      for (let xs = xs0; xs + shift <= Rr + 16; xs += 16) {
+        ctx.lineTo(xs + shift, GROUND - 30 - (150 - layer * 40) - hAt(xs) + layer * 55);
       }
-      ctx.lineTo(L + Wd, GROUND);
+      ctx.lineTo(Rr + 16, GROUND + 2);
+      ctx.closePath();
       ctx.fill();
     }
     for (let i = 0; i < 3; i++) {
-      const x = ((T * (12 + i * 6) + i * 333) % (W + 600)) - 300;
-      ctx.fillStyle = rgrad(ctx, x, GROUND - 30 - i * 25, 260, bg.fog + '22', 'transparent');
-      ctx.fillRect(x - 260, GROUND - 300, 520, 400);
+      const x = ((T * (12 + i * 6) + i * 777) % (AW + 900)) - 450;
+      ctx.fillStyle = rgrad(ctx, x, GROUND - 30 - i * 25, 300, bg.fog + '22', 'transparent');
+      ctx.fillRect(x - 300, GROUND - 330, 600, 430);
     }
     const gg = ctx.createLinearGradient(0, GROUND, 0, GROUND + 160);
     gg.addColorStop(0, bg.ground);
     gg.addColorStop(1, mixHex(bg.ground, '#000000', 0.7));
     ctx.fillStyle = gg;
-    ctx.fillRect(L, GROUND, Wd, 900);
+    ctx.fillRect(L, GROUND, Rr - L, 900);
     ctx.fillStyle = mixHex(bg.ground, '#ffffff', 0.18);
-    ctx.fillRect(L, GROUND, Wd, 3);
+    ctx.fillRect(L, GROUND, Rr - L, 3);
+    // pedrinhas no chão (dão noção de deslocamento quando a câmera corre)
+    ctx.fillStyle = mixHex(bg.ground, '#ffffff', 0.1);
+    for (let c = Math.floor(L / 70); c * 70 < Rr; c++) {
+      const x = c * 70 + h01(c + 900, 1) * 50;
+      const w = 4 + h01(c + 900, 2) * 10;
+      ctx.fillRect(x, GROUND + 8 + h01(c + 900, 3) * 40, w, 2.5);
+    }
+    if (!this.duel) this.drawWalls(ctx, top);
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    for (let i = 0; i < 36; i++) {
+    for (let i = 0; i < 60; i++) {
       const sp = 8 + h01(i, 1) * 22;
-      const x = ((h01(i, 2) * (W + 200) + Math.sin(T * 0.7 + i) * 30) % (W + 200)) - 100;
-      const y = GROUND - ((T * sp + h01(i, 3) * 800) % (GROUND + oy + 100));
+      const span = AW + 400;
+      const x = ((h01(i, 2) * span + Math.sin(T * 0.7 + i) * 30) % span) - 200;
+      const y = GROUND - ((T * sp + h01(i, 3) * 800) % 820);
+      if (x < L - 10 || x > Rr + 10) continue;
       ctx.globalAlpha = 0.25 + 0.5 * h01(i, 4);
       ctx.fillStyle = bg.particle;
       ctx.beginPath();
@@ -926,10 +1423,42 @@ export class BossBattle {
     ctx.restore();
   }
 
+  /** Paredões de pedra nas pontas da arena (ninguém sai dela). */
+  private drawWalls(ctx: CanvasRenderingContext2D, top: number) {
+    const bg = this.r.boss.bg;
+    const body = mixHex(bg.ground, '#000000', 0.35);
+    const edge = mixHex(bg.ground, '#ffffff', 0.12);
+    for (const sd of [-1, 1]) {
+      const x0 = sd < 0 ? 0 : this.AW;
+      ctx.fillStyle = body;
+      ctx.beginPath();
+      ctx.moveTo(x0 + sd * 600, GROUND + 200);
+      const y0 = Math.floor((top - 20) / 30) * 30;
+      ctx.lineTo(x0 + sd * 600, y0);
+      for (let y = y0; y <= GROUND; y += 30) {
+        const c = Math.floor(y / 30);
+        ctx.lineTo(x0 - sd * (h01(c + 300, sd + 2) * 26 + (y > GROUND - 60 ? 18 : 0)), y);
+      }
+      ctx.lineTo(x0 - sd * 40, GROUND + 200);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = edge;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let y = y0; y <= GROUND; y += 30) {
+        const c = Math.floor(y / 30);
+        const x = x0 - sd * (h01(c + 300, sd + 2) * 26 + (y > GROUND - 60 ? 18 : 0));
+        if (y === y0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+  }
+
   /** Plataformas de pedra flutuantes (como nos mapas do PvP). */
   private drawPlatforms(ctx: CanvasRenderingContext2D, T: number) {
     const bg = this.r.boss.bg;
-    for (const [n, p] of PLATS.entries()) {
+    for (const [n, p] of this.plats.entries()) {
       const w = p.x1 - p.x0;
       ctx.save();
       // brilho embaixo
@@ -961,7 +1490,11 @@ export class BossBattle {
     }
   }
 
-  private playerPose(i: number, T: number, v: ReturnType<BossBattle['at']>): { pose: Pose; rot: number; alpha: number; atk: { a: PAtk; motion: Motion; timing: AttackTiming; local: number } | null } {
+  private playerPose(
+    i: number,
+    T: number,
+    v: ReturnType<BossBattle['at']>,
+  ): { pose: Pose; rot: number; alpha: number; atk: { a: PAtk; motion: Motion; timing: AttackTiming; local: number } | null } {
     const shape = this.shapes[i];
     const w = this.weapons[i];
     if (v.anim === ANIM.attack1 || v.anim === ANIM.attack2) {
@@ -992,7 +1525,7 @@ export class BossBattle {
     const eq = p.equipment;
 
     // sombra no chão / plataforma
-    const plat = PLATS.find((pl) => v.x >= pl.x0 && v.x <= pl.x1 && v.y <= pl.y + 1);
+    const plat = this.plats.find((pl) => v.x >= pl.x0 && v.x <= pl.x1 && v.y <= pl.y + 1);
     const gy = plat ? plat.y : GROUND;
     const d = clamp((gy - v.y) / 260);
     ctx.fillStyle = `rgba(0,0,0,${0.35 * (1 - d)})`;
@@ -1015,7 +1548,13 @@ export class BossBattle {
     if (atk && w && ['swing', 'slam', 'combo', 'spin', 'thrust', 'throw', 'leap', 'stab'].includes(atk.motion)) {
       try {
         drawSwingTrail(ctx, {
-          look: p.look, weapon: w, shape, motion: atk.motion, hits: (atk.a.slot === 2 ? w.a2 : w.a1).hits, timing: atk.timing, local: atk.local,
+          look: p.look,
+          weapon: w,
+          shape,
+          motion: atk.motion,
+          hits: (atk.a.slot === 2 ? w.a2 : w.a1).hits,
+          timing: atk.timing,
+          local: atk.local,
           origin: (lt) => {
             const g = this.at(this.pt[i], (atk.timing.start + lt) / FPS);
             return { x: g.x, y: g.y, facing: g.f };
@@ -1083,7 +1622,7 @@ export class BossBattle {
     const kk = clamp((T - q0) / (a.hitAt - q0));
     if (kk <= 0 || kk >= 1) return;
     const src = this.at(this.pt[i], q0);
-    const from = { x: src.x + 20, y: src.y - 60 * this.ps };
+    const from = { x: src.x + 20 * src.f, y: src.y - 60 * this.ps };
     const x = from.x + (core.x - from.x) * kk;
     const y = from.y + (core.y - from.y) * kk - Math.sin(kk * Math.PI) * (p.style === 'ranged' ? 50 : 14);
     ctx.save();
@@ -1126,7 +1665,15 @@ export class BossBattle {
 
   // ------------------------------------------------------------------ duelista
 
-  private drawDuelist(ctx: CanvasRenderingContext2D, T: number, bs: ReturnType<BossBattle['bossState']>, fr: DuelFrame | null, x: number, y: number, B: ReturnType<BossBattle['at']>) {
+  private drawDuelist(
+    ctx: CanvasRenderingContext2D,
+    T: number,
+    bs: ReturnType<BossBattle['bossState']>,
+    fr: DuelFrame | null,
+    x: number,
+    y: number,
+    B: ReturnType<BossBattle['at']>,
+  ) {
     const av = this.r.boss.avatar;
     if (!av) return;
     const glowC = this.r.boss.pal.glow;
@@ -1162,7 +1709,17 @@ export class BossBattle {
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     ctx.globalAlpha = alpha;
-    ctx.fillStyle = rgrad(ctx, px, py - 55 * s, 90 * s * (0.8 + aura * 0.5), glowC + Math.round(clamp(aura) * 110).toString(16).padStart(2, '0'), 'transparent');
+    ctx.fillStyle = rgrad(
+      ctx,
+      px,
+      py - 55 * s,
+      90 * s * (0.8 + aura * 0.5),
+      glowC +
+        Math.round(clamp(aura) * 110)
+          .toString(16)
+          .padStart(2, '0'),
+      'transparent',
+    );
     ctx.beginPath();
     ctx.arc(px, py - 55 * s, 90 * s * (0.8 + aura * 0.5), 0, TAU);
     ctx.fill();
@@ -1232,18 +1789,27 @@ export class BossBattle {
       const d = T - st.t;
       if (d < 0 || d > 0.7) continue;
       const q = d / 0.7;
-      const side = i % 2 ? 1 : -1;
-      const x = st.x + side * 55 * bk;
-      ctx.save();
-      for (let j = 0; j < 6; j++) {
-        const dir = (j % 2 ? 1 : -1) * (0.4 + h01(i, j) * 0.8);
-        ctx.globalAlpha = (1 - q) * 0.35 * (0.4 + st.k * 0.6);
-        ctx.fillStyle = dust;
-        ctx.beginPath();
-        ctx.arc(x + dir * q * 70 * bk, GROUND - 6 * bk - q * (14 + h01(i, j + 9) * 18) * bk, (8 + q * 22) * bk * (0.6 + h01(i, j + 3) * 0.6), 0, TAU);
-        ctx.fill();
+      // pouso: nuvem dos dois lados; passo: só embaixo do pé que pisou
+      const sides = st.land ? [-1.4, 1.4] : [i % 2 ? 1 : -1];
+      for (const side of sides) {
+        const x = st.x + side * 55 * bk;
+        ctx.save();
+        for (let j = 0; j < (st.land ? 9 : 6); j++) {
+          const dir = (j % 2 ? 1 : -1) * (0.4 + h01(i, j) * 0.8);
+          ctx.globalAlpha = (1 - q) * 0.35 * (0.4 + st.k * 0.6);
+          ctx.fillStyle = dust;
+          ctx.beginPath();
+          ctx.arc(
+            x + dir * q * 70 * bk,
+            GROUND - 6 * bk - q * (14 + h01(i, j + 9) * 18) * bk,
+            (8 + q * 22) * bk * (0.6 + h01(i, j + 3) * 0.6),
+            0,
+            TAU,
+          );
+          ctx.fill();
+        }
+        ctx.restore();
       }
-      ctx.restore();
     }
   }
 
@@ -1254,24 +1820,28 @@ export class BossBattle {
     for (const tp of this.tps) {
       const d = T - tp.t;
       if (d < -0.15 || d > 0.6) continue;
+      const sc = tp.k ?? 1;
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
-      for (const [pt, delay] of [[tp.from, 0], [tp.to, 0.05]] as const) {
+      for (const [pt, delay] of [
+        [tp.from, 0],
+        [tp.to, 0.05],
+      ] as const) {
         const k = clamp((d - delay + 0.15) / 0.6);
         if (k <= 0 || k >= 1) continue;
         ctx.globalAlpha = 1 - k;
         ctx.strokeStyle = c1;
         ctx.lineWidth = 3 * (1 - k) + 1;
         ctx.beginPath();
-        ctx.ellipse(pt.x, pt.y - 55, 20 + k * 60, 70 + k * 30, 0, 0, TAU);
+        ctx.ellipse(pt.x, pt.y - 55 * sc, (20 + k * 60) * sc, (70 + k * 30) * sc, 0, 0, TAU);
         ctx.stroke();
-        ctx.fillStyle = rgrad(ctx, pt.x, pt.y - 55, 80, c2 + '88', 'transparent');
-        ctx.fillRect(pt.x - 80, pt.y - 140, 160, 170);
+        ctx.fillStyle = rgrad(ctx, pt.x, pt.y - 55 * sc, 80 * sc, c2 + '88', 'transparent');
+        ctx.fillRect(pt.x - 80 * sc, pt.y - 140 * sc, 160 * sc, 170 * sc);
         for (let i = 0; i < 10; i++) {
           const a = (i / 10) * TAU + h01(i, 9);
           ctx.fillStyle = i % 2 ? c1 : '#ffffff';
           ctx.beginPath();
-          ctx.arc(pt.x + Math.cos(a) * k * 70, pt.y - 55 + Math.sin(a) * k * 90, Math.max(0.5, 3 * (1 - k)), 0, TAU);
+          ctx.arc(pt.x + Math.cos(a) * k * 70 * sc, pt.y - 55 * sc + Math.sin(a) * k * 90 * sc, Math.max(0.5, 3 * (1 - k) * sc), 0, TAU);
           ctx.fill();
         }
       }

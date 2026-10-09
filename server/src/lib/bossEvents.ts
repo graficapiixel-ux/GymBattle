@@ -9,6 +9,7 @@ import type { BossEventAdmin, BossEventPublic, BossRunDTO } from '@gymbattle/sha
 import { prisma } from '../db.js';
 import { BOSSES_BY_ID } from '../bosses/catalog.js';
 import { simulateBossFight } from '../bosses/sim.js';
+import { bossWinChance } from '../bosses/chance.js';
 import { fighterSnapshot } from './battles.js';
 import { grantGift } from './gifts.js';
 import { badRequest, conflict, forbidden, notFound } from './http.js';
@@ -141,8 +142,8 @@ export async function leaveOtherRuns(eventId: string, userId: string, exceptRunI
 }
 
 /**
- * A LUTA: sorteia o resultado no servidor (chance definida pelo admin, igual
- * para qualquer tamanho de time), monta a luta e entrega o espólio.
+ * A LUTA: sorteia o resultado no servidor (chance definida pelo admin + 1% por
+ * membro extra do time), monta a luta e entrega o espólio.
  */
 export async function fightRun(runId: string, leaderId: string) {
   // trava a sala: duas lutas ao mesmo tempo não acontecem
@@ -160,7 +161,8 @@ export async function fightRun(runId: string, leaderId: string) {
     const boss = BOSSES_BY_ID[ev.bossId];
     if (!boss) throw notFound('Boss não encontrado.');
 
-    const won = randomInt(0, 10_000) < ev.winChance * 100;
+    // +1% por membro extra do time (escondido: nada disso aparece para o jogador)
+    const won = randomInt(0, 10_000) < bossWinChance(ev.winChance, team.length) * 100;
     const seed = randomInt(1, 2_000_000_000);
     const replay = simulateBossFight({ boss, fighters: team.map((m) => fighterSnapshot(m.user)), won, seed });
 

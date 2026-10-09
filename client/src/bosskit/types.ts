@@ -34,6 +34,11 @@ export interface DrawState {
   gait: number;
   vx: number;
   vy: number;
+  /**
+   * 0..1: no ar (salto/voo). Quem tem asas bate as asas; quem tem pernas encolhe.
+   * As coordenadas continuam LOCAIS: a luta espelha o desenho quando o boss vira para a direita.
+   */
+  air?: number;
 }
 
 /**

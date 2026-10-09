@@ -18,8 +18,10 @@ const WAIST: V = { x: 8, y: -122 };
 function armAngles(st: DrawState, w: PW, pp: number, lag: number, back = false) {
   const b = st.anim === 'attack' ? beatAt(pp) : { ant: 0, hit: 0, imp: 0, ov: 0 };
   const G = clamp(st.move);
-  let a1 = -2.75 + Math.sin(st.t * 1.4 + lag) * 0.05 + Math.sin(st.gait * TAU + 0.8 + lag) * 0.08 * G;
-  let a2 = 0.12 + Math.sin(st.t * 2.1 + 0.5 + lag * 2) * 0.05 + Math.sin(st.gait * TAU + 1.6 + lag) * 0.06 * G;
+  // repouso "rezando": fêmur erguido para a frente e a tíbia (foice) dobrada para baixo, colada nele
+  const air = clamp(st.air ?? 0);
+  let a1 = -2.42 + Math.sin(st.t * 1.4 + lag) * 0.05 + Math.sin(st.gait * TAU + 0.8 + lag) * 0.08 * G - air * 0.25;
+  let a2 = 1.22 + Math.sin(st.t * 2.1 + 0.5 + lag * 2) * 0.05 + Math.sin(st.gait * TAU + 1.6 + lag) * 0.06 * G - air * 0.2;
   const P = (kk: number, w1: number, w2: number, s1: number, s2: number, o1: number, o2: number) => {
     if (kk <= 0) return;
     const r1 = lerp(lerp(a1, w1, b.ant), s1, b.hit) + o1 * b.ov;
@@ -77,7 +79,7 @@ export function mantis(ctx: CanvasRenderingContext2D, s: BossSpec, st: DrawState
   ox += -G.dir * G.mv * 6;
   lean += -0.06 * G.mv * G.dir + Math.sin(G.g * TAU) * 0.025 * G.mv;
   // parada: balança como folha ao vento (comportamento de louva-a-deus)
-  const idle = (1 - G.mv) * (1 - w.on * 0.7) * (1 - die);
+  const idle = (1 - G.mv) * (1 - w.on * 0.7) * (1 - die) * (1 - clamp(st.air ?? 0));
   ox += Math.sin(st.t * 1.1) * 6 * idle;
   lean += Math.sin(st.t * 1.1 - 0.7) * 0.03 * idle + br * 0.012;
   oy += br * 1.5;
@@ -125,6 +127,9 @@ export function mantis(ctx: CanvasRenderingContext2D, s: BossSpec, st: DrawState
     // troca de peso no idle / pernas firmes no salto
     f = add(f, 0, -fidget(st, i, 4, Math.floor(seed * 97), idle) * 16);
     f.y -= jump * (L.base < 0 ? 34 : 18);
+    // no ar (salto/voo): pernas encolhidas sob o corpo
+    const air0 = clamp(st.air ?? 0);
+    if (air0 > 0) f = { x: lerp(f.x, hip.x + (L.base < 0 ? -26 : 34), air0 * 0.8), y: lerp(f.y, hip.y + 58, air0 * 0.8) };
     // no salto, as pernas de trás empurram (esticam para trás)
     f.x += w.charge * (L.base > 0 ? a * 10 + h * 22 : -a * 6 - h * 16) * (1 - sm(0.54, 0.74, p));
     if (curl > 0) {
@@ -143,16 +148,21 @@ export function mantis(ctx: CanvasRenderingContext2D, s: BossSpec, st: DrawState
   for (let i = 0; i < 2; i++) leg(ctx, legPos[i].hip, legPos[i].f, legs[i].l1, legs[i].l2, farLeg);
 
   // ---------------------------------------------------------------- asas abertas (atrás de tudo)
+  const air = clamp(st.air ?? 0);
   const wingOpen = clamp(w.roar * (a + h) + w.cast * 0.7 * (a + h) + w.charge * (a * 0.3 + h) * 0.9 + st.rage * 0.12
-    + sm(0, 0.2, die) * (1 - sm(0.3, 0.6, die)) * 0.8);
-  const buzz = Math.sin(st.t * 38) * 0.06 * wingOpen;
-  if (wingOpen > 0.04) {
+    + sm(0, 0.2, die) * (1 - sm(0.3, 0.6, die)) * 0.8 + air * 1.2);
+  // no ar as asas batem rápido de verdade (borrão de inseto); no chão só vibram
+  const buzz = Math.sin(st.t * 38) * 0.06 * wingOpen + Math.sin(st.t * 72) * 0.42 * air;
+  // no ar: imagens fantasma das asas em outras fases da batida (borrão de movimento)
+  const ghosts = air > 0.2 ? [-0.75, -0.4, 0] : [0];
+  if (wingOpen > 0.04) for (const gph of ghosts) {
+    const gb = gph ? Math.sin(st.t * 72 + gph * 2.4) * 0.42 * air + Math.sin(st.t * 38) * 0.06 * wingOpen : buzz;
     ctx.save();
     ctx.translate(10 + ox, -140 + oy);
     for (const [i, col] of [[1, c.dark], [0, c.body]] as const) {
       ctx.save();
-      ctx.rotate(0.22 - wingOpen * (0.95 + i * 0.5) + buzz * (i ? -1 : 1));
-      ctx.globalAlpha = 0.6 * clamp(wingOpen * 3);
+      ctx.rotate(0.22 - wingOpen * (0.95 + i * 0.5) + gb * (i ? -1 : 1));
+      ctx.globalAlpha = (0.6 - air * 0.2) * clamp(wingOpen * 3) * (gph ? 0.3 : 1);
       ctx.fillStyle = vgrad(ctx, -50, 30, mixHex(col, s.pal.glow, 0.45), hexA(col, 0.6));
       ctx.beginPath();
       ctx.moveTo(0, 0);
@@ -278,13 +288,14 @@ export function mantis(ctx: CanvasRenderingContext2D, s: BossSpec, st: DrawState
     ctx.strokeStyle = c.line;
     ctx.lineWidth = 1.6;
     ctx.stroke();
+    // espinhos do fêmur do lado de DENTRO (onde a foice fecha), como num louva-a-deus de verdade
     ctx.fillStyle = edge;
     for (let i = 0; i < 5; i++) {
       const x = 22 + i * 14;
       ctx.beginPath();
-      ctx.moveTo(x, 6);
-      ctx.lineTo(x + 3, 18);
-      ctx.lineTo(x + 7, 6);
+      ctx.moveTo(x, -6);
+      ctx.lineTo(x + 3, -18);
+      ctx.lineTo(x + 7, -6);
       ctx.fill();
     }
     ctx.restore();
@@ -292,21 +303,33 @@ export function mantis(ctx: CanvasRenderingContext2D, s: BossSpec, st: DrawState
     ctx.save();
     ctx.translate(g.E.x, g.E.y);
     ctx.rotate(a2);
-    ctx.fillStyle = vgrad(ctx, -14, 12, mixHex(col, '#ffffff', 0.25), col);
+    // a foice: costas grossas por fora, fio afiado e dentes por dentro, gancho na ponta
+    ctx.fillStyle = vgrad(ctx, -12, 14, col, mixHex(col, '#ffffff', 0.25));
     ctx.beginPath();
-    ctx.moveTo(0, -7);
-    ctx.quadraticCurveTo(50, -15, 98, 6);
-    ctx.quadraticCurveTo(52, 2, 0, 8);
+    ctx.moveTo(0, 8);
+    ctx.quadraticCurveTo(50, 15, 92, -2);
+    ctx.quadraticCurveTo(104, -8, 100, -20);
+    ctx.quadraticCurveTo(95, -10, 86, -7);
+    ctx.quadraticCurveTo(48, -3, 0, -7);
     ctx.closePath();
     ctx.fill();
     ctx.strokeStyle = c.line;
     ctx.lineWidth = 1.5;
     ctx.stroke();
+    ctx.fillStyle = edge;
+    for (let i = 0; i < 6; i++) {
+      const x = 14 + i * 12;
+      ctx.beginPath();
+      ctx.moveTo(x, -4.5);
+      ctx.lineTo(x + 2, -11);
+      ctx.lineTo(x + 5, -5);
+      ctx.fill();
+    }
     ctx.strokeStyle = hexA(s.pal.glow, 0.5 + 0.5 * clamp(w.on * (a + h) + st.rage * 0.4));
     ctx.lineWidth = 2.5;
     ctx.beginPath();
-    ctx.moveTo(6, 6);
-    ctx.quadraticCurveTo(52, 3, 96, 6);
+    ctx.moveTo(6, -6);
+    ctx.quadraticCurveTo(50, -4, 88, -7);
     ctx.stroke();
     ctx.restore();
     ctx.fillStyle = edge;

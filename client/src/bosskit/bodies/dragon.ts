@@ -285,6 +285,13 @@ function drawDrake(ctx: CanvasRenderingContext2D, s: BossSpec, st: DrawState): A
     eyeOpen = 1 - ss(0.6, 0.88, die);
   }
   sy += tremor;
+  // no ar (salto/voo pela arena): asas abertas batendo forte
+  const air = clamp(st.air ?? 0);
+  if (air > 0) {
+    const fl = Math.sin(t * 9.5);
+    wingS = lerp(wingS, 0.7 + 0.35 * fl, air);
+    wingR += air * (fl * 0.35 - 0.1);
+  }
 
   const S: V = { x: sx, y: sy };
   const H: V = { x: hx, y: hy };
