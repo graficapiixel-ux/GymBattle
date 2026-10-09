@@ -39,6 +39,16 @@ eventsRouter.get('/active', async (req, res) => {
 const here = path.dirname(fileURLToPath(import.meta.url));
 const KIT_PATHS = [path.join(here, 'bosskit.js'), path.join(here, '..', 'dist', 'bosskit.js'), path.join(here, '..', '..', 'dist', 'bosskit.js')];
 
+/** O kit fica em memória (antes era lido do disco, de forma bloqueante, a cada pedido). */
+let kitCache: { file: string; mtime: number; buf: Buffer } | null = null;
+function loadKit(): Buffer | null {
+  const file = KIT_PATHS.find((p) => fs.existsSync(p));
+  if (!file) return null;
+  const mtime = fs.statSync(file).mtimeMs;
+  if (!kitCache || kitCache.file !== file || kitCache.mtime !== mtime) kitCache = { file, mtime, buf: fs.readFileSync(file) };
+  return kitCache.buf;
+}
+
 /**
  * O código que desenha e anima os bosses. Só é entregue para o admin, ou
  * quando há evento ativo, ou para quem lutou nos últimos 3 dias (rever a luta).
@@ -54,11 +64,11 @@ eventsRouter.get('/kit.js', async (req, res) => {
     }));
   }
   if (!ok) throw notFound('Rota não encontrada.');
-  const file = KIT_PATHS.find((p) => fs.existsSync(p));
-  if (!file) return void res.status(503).json({ error: 'Indisponível.', code: 'KIT_MISSING' });
+  const kit = loadKit();
+  if (!kit) return void res.status(503).json({ error: 'Indisponível.', code: 'KIT_MISSING' });
   res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
   res.setHeader('Cache-Control', 'private, no-store');
-  res.send(fs.readFileSync(file));
+  res.send(kit);
 });
 
 // ------------------------------------------------------------------ times

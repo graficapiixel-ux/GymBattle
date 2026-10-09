@@ -36,6 +36,7 @@ export async function createUser(input: { email: string; username: string; passw
         username: input.username,
         passwordHash: await hashPassword(input.password),
         cpfHash: cpf,
+        cpfLast2: input.cpf ? input.cpf.slice(-2) : null,
         rankPoints: BALANCE.ranking.startPr,
         avatar: DEFAULT_AVATAR as unknown as Prisma.InputJsonValue,
       },

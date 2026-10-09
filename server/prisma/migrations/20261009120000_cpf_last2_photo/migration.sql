@@ -1,0 +1,4 @@
+-- AlterTable
+ALTER TABLE `User` ADD COLUMN `cpfLast2` VARCHAR(2) NULL,
+    ADD COLUMN `photoPath` VARCHAR(191) NULL;
+

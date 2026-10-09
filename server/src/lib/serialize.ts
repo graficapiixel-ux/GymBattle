@@ -22,7 +22,10 @@ export function streakOf(u: User): number {
 }
 
 export function toPublicUser(u: User): PublicUser {
-  return { id: u.id, username: u.username, level: u.level, title: u.title, avatar: avatarOf(u), equipment: equipmentOf(u) };
+  return {
+    id: u.id, username: u.username, level: u.level, title: u.title, avatar: avatarOf(u), equipment: equipmentOf(u),
+    photoUrl: u.photoPath ? `/uploads/${u.photoPath}` : null,
+  };
 }
 
 export function toMe(u: User): MeUser {
@@ -41,6 +44,8 @@ export function toMe(u: User): MeUser {
     starterWeapon: u.starterWeapon,
     protectedUntil: u.protectedUntil && u.protectedUntil > new Date() ? u.protectedUntil.toISOString() : null,
     createdAt: u.createdAt.toISOString(),
+    hasCpf: !!u.cpfHash,
+    cpfLast2: u.cpfLast2,
     groupId: u.groupId,
     groupRole: u.groupId ? (u.groupRole as GroupRole) : null,
   };

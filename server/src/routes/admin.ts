@@ -95,6 +95,7 @@ async function userDetail(id: string): Promise<AdminUserDetail> {
   return {
     id: u.id, username: u.username, email: u.email, level: u.level, xp: u.xp, xpToNext: xpToNext(u.level),
     gold: u.gold, attrPoints: u.attrPoints, legendNext: u.legendNext, items,
+    photoUrl: u.photoPath ? `/uploads/${u.photoPath}` : null, hasCpf: !!u.cpfHash,
   };
 }
 
@@ -137,6 +138,19 @@ adminRouter.post('/users/:id/items', async (req, res) => {
   if (!u) throw notFound('Conta não encontrada.');
   const gift = await prisma.$transaction((tx) => grantGift(tx, { userId: id, kind: 'ITEM', itemId, reason, byId: req.user!.id }));
   await log(req.user!.id, 'ADMIN_GIVE_ITEM', id, { itemId, name: info.name, reason: gift.reason });
+  res.json({ user: await userDetail(id) });
+});
+
+/** Remover a foto de perfil de alguém (foto imprópria). */
+adminRouter.delete('/users/:id/photo', async (req, res) => {
+  const id = String(req.params.id);
+  const u = await prisma.user.findUnique({ where: { id } });
+  if (!u) throw notFound('Conta não encontrada.');
+  if (u.photoPath) {
+    await prisma.user.update({ where: { id }, data: { photoPath: null } });
+    await deleteImage(u.photoPath).catch(() => {});
+    await log(req.user!.id, 'REMOVE_PHOTO', id, { username: u.username });
+  }
   res.json({ user: await userDetail(id) });
 });
 

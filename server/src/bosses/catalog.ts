@@ -664,6 +664,52 @@ const DEFS: Def[] = [
   },
 ];
 
+// ------------------------------------------------------------------ DUELISTA (tamanho de jogador, 20 golpes)
+const mv = (n: number, name: string, color: string, color2: string, aoe: boolean, dur: number): Omit<BossAttack, 'id'> => ({
+  name, fx: 'duel', pose: 'swipe', color, color2, aoe, dur, move: `m${String(n).padStart(2, '0')}`,
+});
+DEFS.push({
+  id: 'takamori', name: 'Ren Takamori', title: 'o Feiticeiro das Mil Lâminas', arch: 'duelist', kind: 0, size: 1,
+  lore: 'Do tamanho de qualquer um de vocês. Só que ele nunca está onde você acha que ele está.',
+  pal: ['#2a2240', '#15121f', '#ff3a6a', '#b57cff', '#ff3a6a'],
+  bg: ['#05030c', '#1e1036', '#1a1426', '#8a3aff', '#ff9ad0'],
+  attacks: [
+    mv(1, 'Corte Relâmpago', '#ffffff', '#b57cff', false, 1.6),
+    mv(2, 'Passo Fantasma', '#c8a8ff', '#ffffff', false, 1.7),
+    mv(3, 'Mil Cortes', '#ff3a6a', '#ffffff', false, 2.2),
+    mv(4, 'Lua Crescente', '#b57cff', '#ffffff', true, 2.0),
+    mv(5, 'Chuva de Lâminas', '#d8c8ff', '#b57cff', true, 2.4),
+    mv(6, 'Selos Explosivos', '#ffcc33', '#ff3a6a', true, 2.3),
+    mv(7, 'Dragão de Tinta', '#1a1426', '#b57cff', true, 2.6),
+    mv(8, 'Prisão de Selos', '#ff3a6a', '#ffcc33', false, 2.3),
+    mv(9, 'Três Reflexos', '#b57cff', '#ffffff', true, 2.2),
+    mv(10, 'Salto Celeste', '#ffffff', '#ff3a6a', true, 2.2),
+    mv(11, 'Tornado Cortante', '#c8a8ff', '#ffffff', true, 2.4),
+    mv(12, 'Lança Escarlate', '#ff3a6a', '#ffffff', false, 2.0),
+    mv(13, 'Esfera Gravitacional', '#6a2aff', '#ff9ad0', true, 2.6),
+    mv(14, 'Corrente de Selos', '#ffcc33', '#b57cff', false, 2.2),
+    mv(15, 'Iaijutsu Final', '#ffffff', '#ff3a6a', true, 2.6),
+    mv(16, 'Pétalas de Aço', '#ff9ad0', '#ffffff', true, 2.4),
+    mv(17, 'Martelo do Céu', '#b57cff', '#ffffff', true, 2.6),
+    mv(18, 'Dança das Sombras', '#2a2240', '#b57cff', true, 2.8),
+    mv(19, 'Contra-ataque', '#ffffff', '#ffcc33', false, 1.8),
+    mv(20, 'Despertar: Mil Lâminas', '#ff3a6a', '#b57cff', true, 3.4),
+  ],
+});
+
+/** Aparência dos duelistas (desenhados como jogadores). */
+const DUELIST_LOOK: Record<string, BossSpec['avatar']> = {
+  takamori: {
+    look: {
+      skin: '#8a5a3c', face: 4, hair: 4, hairColor: '#b3263a', beard: 0, body: 1, height: 1, gender: 0,
+      eyes: '#8a3aa8', marks: 2, accessory: 2, top: '#16161a', shorts: '#16161a',
+    },
+    equipment: {
+      weapon: 'muramasa-do-vazio', helm: null, chest: 'armor:espectro-vazio:chest', gloves: 'armor:rei-caido:gloves', legs: 'armor:espectro-vazio:legs',
+    },
+  },
+};
+
 export const BOSSES: BossSpec[] = DEFS.map((d) => ({
   id: d.id,
   name: d.name,
@@ -675,6 +721,7 @@ export const BOSSES: BossSpec[] = DEFS.map((d) => ({
   feat: { kind: d.kind, ...(d.feat ?? {}) },
   bg: { sky: [d.bg[0], d.bg[1]], ground: d.bg[2], fog: d.bg[3], particle: d.bg[4] },
   attacks: d.attacks.map((a, i) => ({ ...a, id: `${d.id}-${i}` })),
+  ...(DUELIST_LOOK[d.id] ? { avatar: DUELIST_LOOK[d.id] } : {}),
 }));
 
 export const BOSSES_BY_ID: Record<string, BossSpec> = Object.assign(Object.create(null), Object.fromEntries(BOSSES.map((b) => [b.id, b])));

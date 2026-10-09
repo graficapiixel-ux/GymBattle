@@ -58,6 +58,10 @@ model User {
 
   // CPF (só o "hash" com segredo, nunca o número): impede várias contas por pessoa
   cpfHash      String?  @unique @db.VarChar(64)
+  // 2 últimos dígitos (só para mostrar "•••-25"); o CPF em si nunca é guardado
+  cpfLast2     String?  @db.VarChar(2)
+  // foto de perfil enviada pelo jogador (no lugar do busto do guerreiro)
+  photoPath    String?  @db.VarChar(191)
 
   // Grupo (1 por pessoa). groupRole: OWNER (criador) | ADMIN | MEMBER — NÃO tem nada a ver com o admin do site
   groupId       String?

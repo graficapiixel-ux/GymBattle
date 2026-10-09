@@ -1,0 +1,48 @@
+# Verifica cada push: tipos, testes automáticos (com banco de verdade) e build.
+# O deploy em si é feito pela Hostinger, que reconstrói o site a cada push na branch main.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        db: ['mariadb:10.11', 'mysql:8.0']
+    services:
+      db:
+        image: ${{ matrix.db }}
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MARIADB_ROOT_PASSWORD: root
+          MYSQL_DATABASE: gymbattle
+          MARIADB_DATABASE: gymbattle
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot || mariadb-admin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+    env:
+      NODE_ENV: test
+      DATABASE_URL: mysql://root:root@127.0.0.1:3306/gymbattle
+      JWT_SECRET: gh-actions-only-7fK2pQ9xLm4Rt8vW1zB6nY3hJ5dG0sAe
+      ADMIN_EMAIL: lucasmartins2216@gmail.com
+      ADMIN_PASSWORD: ci-admin-password
+      UPLOAD_DIR: /tmp/gb-uploads
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx prisma migrate deploy --schema server/prisma/schema.prisma
+      - run: npx prisma generate --schema server/prisma/schema.prisma
+      - run: npx tsx server/prisma/seed.ts
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build

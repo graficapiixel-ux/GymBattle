@@ -45,6 +45,8 @@ export interface PublicUser {
   title: string | null;
   avatar: AvatarLook;
   equipment: Equipment;
+  /** Foto de perfil enviada pelo jogador (null = mostra o busto do guerreiro). */
+  photoUrl: string | null;
 }
 
 export interface MeUser extends PublicUser {
@@ -63,6 +65,9 @@ export interface MeUser extends PublicUser {
   /** Protegido contra desafios até (ISO) ou null. */
   protectedUntil: string | null;
   createdAt: string;
+  /** Já confirmou o CPF (obrigatório; depois de confirmado não muda). */
+  hasCpf: boolean;
+  cpfLast2: string | null;
   /** Grupo atual (null = sem grupo). */
   groupId: string | null;
   /** Cargo no grupo: OWNER (criador) | ADMIN | MEMBER. Não é o admin do site. */
@@ -113,6 +118,8 @@ export interface AdminUserDetail {
   /** Evento lendário armado para a próxima luta. */
   legendNext: boolean;
   items: { itemId: string; name: string; kind: 'weapon' | 'armor'; equipped: boolean; starter?: boolean }[];
+  photoUrl: string | null;
+  hasCpf: boolean;
 }
 
 export interface AdminUserRow {

@@ -8,14 +8,18 @@ import type { Equipment } from './items/equipment.js';
 
 export type BossArch =
   | 'dragon' | 'golem' | 'eye' | 'undead' | 'elemental' | 'insect' | 'machine'
-  | 'deity' | 'serpent' | 'spirit' | 'blob' | 'beast' | 'plant';
+  | 'deity' | 'serpent' | 'spirit' | 'blob' | 'beast' | 'plant'
+  /** Do tamanho de um jogador: luta como no PvP (corre, pula, teletransporta). */
+  | 'duelist';
 
 /** Efeitos de ataque (cada um tem animação própria no kit de arte). */
 export type BossFx =
   | 'breath' | 'meteor' | 'beam' | 'slam' | 'spikes' | 'lightning' | 'tentacles' | 'claws' | 'tail'
   | 'poison' | 'shards' | 'vortex' | 'minions' | 'roar' | 'charge' | 'crystals' | 'orbs' | 'scream'
   | 'web' | 'acid' | 'judgement' | 'shadowHands' | 'wave' | 'boulder' | 'drain' | 'gatling' | 'missiles'
-  | 'quake' | 'petals' | 'gaze' | 'blades' | 'nova';
+  | 'quake' | 'petals' | 'gaze' | 'blades' | 'nova'
+  /** Golpe próprio de um duelista (ver BossAttack.move). */
+  | 'duel';
 
 /** Pose do boss enquanto ataca. */
 export type BossPose = 'breath' | 'slam' | 'cast' | 'swipe' | 'charge' | 'roar' | 'shoot';
@@ -31,6 +35,8 @@ export interface BossAttack {
   aoe: boolean;
   /** Duração da animação (s). */
   dur: number;
+  /** Duelista: id do golpe no kit (m01…m20). */
+  move?: string;
 }
 
 export interface BossSpec {
@@ -46,6 +52,8 @@ export interface BossSpec {
   feat: Record<string, number>;
   bg: { sky: [string, string]; ground: string; fog: string; particle: string };
   attacks: BossAttack[];
+  /** Duelista: aparência (desenhado como um jogador). */
+  avatar?: { look: AvatarLook; equipment: Equipment };
 }
 
 export interface BossPlayerMeta {

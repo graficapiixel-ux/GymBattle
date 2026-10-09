@@ -1,0 +1,15 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import * as esbuild from 'esbuild';
+const here = path.dirname(fileURLToPath(import.meta.url));
+const root = path.resolve(here, '../..');
+await esbuild.build({ entryPoints: [path.join(here, 'page.ts')], bundle: true, format: 'iife', outfile: path.join(here, 'page.js'), alias: { '@': path.join(root, 'client/src') }, logLevel: 'error' });
+const { chromium } = await import('/home/claude/.npm-global/lib/node_modules/playwright/index.mjs');
+const b = await chromium.launch();
+const p = await b.newPage();
+const errs = []; p.on('pageerror', (e) => errs.push(e.message));
+await p.goto('file://' + path.join(here, 'page.html'));
+await p.waitForFunction(() => window.done === true, null, { timeout: 60000 });
+await p.pdf({ path: process.argv[2], format: 'A4', printBackground: true, margin: { top: 0, bottom: 0, left: 0, right: 0 } });
+await b.close();
+console.log('ok', errs);

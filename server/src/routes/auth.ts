@@ -33,19 +33,30 @@ const loginAccountLimiter = rateLimit({
   message: { error: 'Muitas tentativas de login nesta conta. Tente de novo em 1 hora.', code: 'RATE_LIMIT' },
 });
 
-/** Por IP: criação de contas (contador separado do login). */
+// Criação de contas por IP: limite FOLGADO (academias e casas dividem a mesma
+// internet), mas sem limite nenhum dava para criar contas em massa com CPFs
+// gerados e para testar se um CPF já está cadastrado.
 const registerLimiter = rateLimit({
   windowMs: 60 * 60_000,
-  limit: TEST ? 1000 : 5,
+  limit: TEST ? 1000 : 40,
   standardHeaders: 'draft-8',
   legacyHeaders: false,
   message: { error: 'Muitas contas criadas daqui. Tente mais tarde.', code: 'RATE_LIMIT' },
+});
+/** Tentativas que deram erro (CPF/e-mail já usados...) contam mais apertado. */
+const registerFailLimiter = rateLimit({
+  windowMs: 60 * 60_000,
+  limit: TEST ? 1000 : 15,
+  skipSuccessfulRequests: true,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: { error: 'Muitas tentativas de cadastro. Tente mais tarde.', code: 'RATE_LIMIT' },
 });
 
 // Hash fixo para gastar o mesmo tempo quando o e-mail não existe (evita enumeração por tempo).
 const DUMMY_HASH = bcrypt.hashSync('dummy-password-for-timing', 12);
 
-authRouter.post('/register', registerLimiter, async (req, res) => {
+authRouter.post('/register', registerLimiter, registerFailLimiter, async (req, res) => {
   if (!(await isSignupEnabled())) throw forbidden('A criação de contas está desativada no momento.');
   const data = registerSchema.parse(req.body);
   const user = await createUser(data);

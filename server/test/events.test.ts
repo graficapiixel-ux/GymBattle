@@ -44,7 +44,7 @@ test('SIGILO: sem evento ativo, jogador não vê nada, nem catálogo, nem kit', 
   await ag.a.get('/api/admin/events').expect(403);
   // admin vê o catálogo inteiro (52)
   const cat = await admin.get('/api/admin/events/bosses').expect(200);
-  assert.equal(cat.body.bosses.length, 52);
+  assert.equal(cat.body.bosses.length, 53);
   assert.ok(cat.body.bosses.every((b: { attacks: unknown[] }) => b.attacks.length >= 4));
   // evento agendado (futuro) continua invisível
   const fut = await admin.post('/api/admin/events').send(mk({ startsAt: new Date(Date.now() + 3_600_000).toISOString() })).expect(201);

@@ -6,10 +6,31 @@ import {
   FACE_STYLES, HAIR_STYLES, BEARD_STYLES, BODY_TYPES, GENDERS, EYE_COLORS, MARKS, ACCESSORIES, OUTFIT_COLORS } from '@gymbattle/shared';
 import { prisma } from '../db.js';
 import { pendingGifts } from '../lib/gifts.js';
+import multer from 'multer';
+import { cpfHash } from '../lib/users.js';
+import { deleteImage, processAvatar, saveAvatar } from '../lib/images.js';
+
+const avatarUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 15 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, cb) => cb(null, file.mimetype.startsWith('image/')),
+});
+const photoLimiter = rateLimit({
+  windowMs: 60 * 60_000,
+  limit: process.env.NODE_ENV === 'test' ? 1000 : 20,
+  keyGenerator: (req) => req.user!.id,
+  message: { error: 'Muitas trocas de foto nesta hora. Tente mais tarde.', code: 'RATE_LIMIT' },
+});
+const cpfLimiter = rateLimit({
+  windowMs: 60 * 60_000,
+  limit: process.env.NODE_ENV === 'test' ? 1000 : 15,
+  keyGenerator: (req) => req.user!.id,
+  message: { error: 'Muitas tentativas. Tente de novo mais tarde.', code: 'RATE_LIMIT' },
+});
 import rateLimit from 'express-rate-limit';
 import { hashPassword, requireAuth, setSessionCookie, verifyPassword } from '../lib/auth.js';
-import { badRequest } from '../lib/http.js';
-import { passwordSchema } from '../lib/validation.js';
+import { badRequest, conflict } from '../lib/http.js';
+import { cpfSchema, passwordSchema } from '../lib/validation.js';
 import { avatarOf, toMe } from '../lib/serialize.js';
 
 export const meRouter = Router();
@@ -22,7 +43,49 @@ const allocSchema = z.object(
   >,
 );
 
-/** Distribui pontos livres nos atributos. */
+/**
+ * CPF de quem já tinha conta: confirma UMA vez (precisa ser válido e não
+ * pode estar em outra conta). Depois de confirmado, não muda mais.
+ */
+meRouter.post('/cpf', cpfLimiter, async (req, res) => {
+  const { cpf } = z.object({ cpf: cpfSchema }).parse(req.body);
+  const me = req.user!;
+  if (me.cpfHash) throw conflict('Seu CPF já foi confirmado e não pode ser trocado.', 'CPF_LOCKED');
+  const h = cpfHash(cpf);
+  const other = await prisma.user.findUnique({ where: { cpfHash: h }, select: { id: true } });
+  if (other) throw conflict('Este CPF já está em outra conta. Cada pessoa só pode ter uma conta.', 'CPF_TAKEN');
+  try {
+    // só grava se ainda não tinha (evita trocar com dois cliques ao mesmo tempo)
+    const r = await prisma.user.updateMany({ where: { id: me.id, cpfHash: null }, data: { cpfHash: h, cpfLast2: cpf.slice(-2) } });
+    if (!r.count) throw conflict('Seu CPF já foi confirmado e não pode ser trocado.', 'CPF_LOCKED');
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+      throw conflict('Este CPF já está em outra conta. Cada pessoa só pode ter uma conta.', 'CPF_TAKEN');
+    }
+    throw e;
+  }
+  const u = await prisma.user.findUniqueOrThrow({ where: { id: me.id } });
+  res.json({ user: toMe(u) });
+});
+
+/** Foto de perfil (pode vir da galeria). */
+meRouter.post('/photo', photoLimiter, avatarUpload.single('photo'), async (req, res) => {
+  if (!req.file) throw badRequest('Escolha uma foto.');
+  const data = await processAvatar(req.file.buffer);
+  const rel = await saveAvatar(req.user!.id, data);
+  const old = req.user!.photoPath;
+  const u = await prisma.user.update({ where: { id: req.user!.id }, data: { photoPath: rel } });
+  if (old) await deleteImage(old).catch(() => {});
+  res.json({ user: toMe(u) });
+});
+
+meRouter.delete('/photo', async (req, res) => {
+  const old = req.user!.photoPath;
+  const u = await prisma.user.update({ where: { id: req.user!.id }, data: { photoPath: null } });
+  if (old) await deleteImage(old).catch(() => {});
+  res.json({ user: toMe(u) });
+});
+
 /** Presentes com aviso ainda não vistos (o app mostra um de cada vez). */
 meRouter.get('/gifts', async (req, res) => {
   res.json({ gifts: await pendingGifts(req.user!.id) });

@@ -115,3 +115,34 @@ export async function deleteImage(rel: string) {
   if (!abs.startsWith(uploadRoot())) return;
   await fs.rm(abs, { force: true });
 }
+
+/** Foto de perfil: quadrada 320×320, WebP, sem metadados. */
+export function processAvatar(input: Buffer): Promise<Buffer> {
+  return withSlot(async () => {
+    let meta: Metadata;
+    try {
+      meta = await sharp(input, { limitInputPixels: LIMIT_PIXELS }).metadata();
+    } catch {
+      throw badRequest('Arquivo de imagem inválido.');
+    }
+    if (!meta.format || !['jpeg', 'png', 'webp', 'heif', 'avif', 'gif'].includes(meta.format)) {
+      throw badRequest('Formato não suportado. Envie JPG, PNG ou WebP.');
+    }
+    const pixels = (meta.width ?? 0) * (meta.height ?? 0);
+    const cheapDecode = meta.format === 'jpeg' || meta.format === 'webp' || meta.format === 'heif';
+    if (pixels > (cheapDecode ? LIMIT_PIXELS : LIMIT_PIXELS_FULL_DECODE)) throw badRequest('Não foi possível abrir essa imagem. Tente outra foto.');
+    return sharp(input, { failOn: 'error', limitInputPixels: LIMIT_PIXELS, sequentialRead: true })
+      .rotate()
+      .resize(320, 320, { fit: 'cover', position: 'attention' })
+      .webp({ quality: 82 })
+      .toBuffer();
+  });
+}
+
+export async function saveAvatar(userId: string, data: Buffer): Promise<string> {
+  const rel = `avatars/${userId}-${Date.now().toString(36)}.webp`;
+  const abs = path.join(uploadRoot(), rel);
+  await fs.mkdir(path.dirname(abs), { recursive: true });
+  await fs.writeFile(abs, data);
+  return rel;
+}

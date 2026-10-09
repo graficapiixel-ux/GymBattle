@@ -42,7 +42,9 @@ export function simulateBossFight(opts: { boss: BossSpec; fighters: FighterInput
   const bossHp = Math.round((1800 + 900 * n) * (1 + avgLevel / 25) / 50) * 50;
 
   // ---------------------------------------------------------------- 1. ataques do boss
-  const fightLen = Math.min(78, 30 + 3.2 * n + R(0, 8));
+  // duelista é rápido: golpes em sequência e luta longa o bastante para mostrar o repertório
+  const duel = boss.arch === 'duelist';
+  const fightLen = duel ? 64 + R(0, 12) : Math.min(78, 30 + 3.2 * n + R(0, 8));
   let T = ENTRANCE + fightLen;
   const atks = boss.attacks;
   const order: number[] = [];
@@ -56,7 +58,7 @@ export function simulateBossFight(opts: { boss: BossSpec; fighters: FighterInput
     if (bt + dur > T + 0.01) break;
     bossActs.push({ t: bt, a, dur, hitAt: bt + dur * 0.55 });
     order.push(a);
-    bt += dur + R(1.4, 2.6);
+    bt += dur + (duel ? R(0.6, 1.2) : R(1.4, 2.6));
   }
   if (!bossActs.length) bossActs.push({ t: ENTRANCE + 1, a: 0, dur: atks[0].dur, hitAt: ENTRANCE + 1 + atks[0].dur * 0.55 });
 
