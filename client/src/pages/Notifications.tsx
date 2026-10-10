@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
-import { Bell, BellRing, Heart, MessageCircle, Swords, ShieldAlert, Crown, X, Hourglass, Dumbbell, Users, Flame } from 'lucide-react';
+import { Bell, BellRing, Heart, MessageCircle, Swords, ShieldAlert, Crown, X, Hourglass, Dumbbell, Users, Flame, Skull } from 'lucide-react';
 import type { PublicUser } from '@gymbattle/shared';
 import { api } from '@/lib/api';
 import { timeAgo } from '@/lib/format';
@@ -37,6 +37,12 @@ const ICON: Record<string, { icon: typeof Bell; color: string }> = {
   BOSS_EVENT: { icon: Flame, color: 'text-hp' },
   BOSS_INVITE: { icon: Swords, color: 'text-volt' },
   BOSS_FIGHT: { icon: Swords, color: 'text-hp' },
+  PVP_EVENT: { icon: Swords, color: 'text-gold' },
+  PVP_INVITE: { icon: Swords, color: 'text-volt' },
+  PVP_FIGHT: { icon: Swords, color: 'text-gold' },
+  WAVES_EVENT: { icon: Skull, color: 'text-hp' },
+  WAVES_INVITE: { icon: Skull, color: 'text-volt' },
+  WAVES_FIGHT: { icon: Skull, color: 'text-hp' },
 };
 
 export default function Notifications() {

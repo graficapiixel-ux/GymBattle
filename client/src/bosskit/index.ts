@@ -4,12 +4,14 @@
  */
 import type { BossSpec } from '@gymbattle/shared';
 import { BossBattle } from './battle';
+import { TeamBattle } from './team';
+export { drawThemePortrait, drawPvpPortrait, mountTeamPortrait } from './themeArt';
 import { bodyFor } from './bodies';
 import type { DrawState } from './types';
 import { TAU, h01, mixHex, rgrad } from './util';
 
-export const KIT_VERSION = 1;
-export { BossBattle };
+export const KIT_VERSION = 2;
+export { BossBattle, TeamBattle };
 
 /** Desenha o boss "posando" (idle, com um rugido de vez em quando) num retângulo. */
 export function drawPortrait(ctx: CanvasRenderingContext2D, spec: BossSpec, t: number, w: number, h: number, opts: { bg?: boolean } = {}) {

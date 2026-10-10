@@ -1,6 +1,7 @@
 /**
- * Eventos de boss — lado do jogador. Nada aqui revela bosses não ativos nem a
- * chance de vitória. Sem evento ativo, tudo responde como se não existisse.
+ * Eventos da Arena (boss, PvP em equipes, waves) — lado do jogador. Nada aqui
+ * revela eventos não ativos, a chance de vitória nem o que o admin configurou.
+ * Sem evento ativo, tudo responde como se não existisse.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,9 +15,9 @@ import { isAdmin, requireAuth } from '../lib/auth.js';
 import { badRequest, conflict, forbidden, notFound } from '../lib/http.js';
 import { notify } from '../lib/notify.js';
 import {
-  activeEvents, assertCanWatch, attemptsUsed, fightRun, leaveOtherRuns, loadRun, openRun, requireActive, statusOf, toPublic,
+  activeEvents, assertCanWatch, attemptsUsed, eventTitle, fightRun, kindOf, leaveOtherRuns, loadRun, openRun, queueRun, requireActive, statusOf, toPublic,
+  unqueueRun,
 } from '../lib/bossEvents.js';
-import { BOSSES_BY_ID } from '../bosses/catalog.js';
 
 export const eventsRouter = Router();
 eventsRouter.use(requireAuth);
@@ -108,7 +109,8 @@ eventsRouter.post('/runs/:runId/invite', limiter, async (req, res) => {
   const left = run.event.attempts - ((await attemptsUsed(run.eventId, [target.id])).get(target.id) ?? 0);
   if (left <= 0) throw badRequest(`${target.username} não tem mais tentativas neste evento.`, 'NO_ATTEMPTS');
   await prisma.bossRunMember.create({ data: { runId: run.id, userId: target.id, accepted: false } });
-  void notify({ userId: target.id, actorId: req.user!.id, type: 'BOSS_INVITE', text: BOSSES_BY_ID[run.event.bossId]?.name ?? 'o boss' });
+  const k = kindOf(run.event);
+  void notify({ userId: target.id, actorId: req.user!.id, type: k === 'PVP' ? 'PVP_INVITE' : k === 'WAVES' ? 'WAVES_INVITE' : 'BOSS_INVITE', text: eventTitle(run.event) });
   res.json({ event: await toPublic(run.event, req.user!.id) });
 });
 
@@ -129,7 +131,7 @@ eventsRouter.post('/runs/:runId/accept', limiter, async (req, res) => {
 eventsRouter.post('/runs/:runId/leave', async (req, res) => {
   const { userId } = z.object({ userId: z.string().max(40).optional() }).parse(req.body ?? {});
   const run = await loadRun(String(req.params.runId));
-  if (run.status !== 'FORMING') throw conflict('Esse time não está mais aberto.');
+  if (run.status !== 'FORMING' && run.status !== 'QUEUED') throw conflict('Esse time não está mais aberto.');
   const target = userId ?? req.user!.id;
   const isLeader = run.leaderId === req.user!.id;
   if (target !== req.user!.id && !isLeader) throw forbidden();
@@ -138,10 +140,24 @@ eventsRouter.post('/runs/:runId/leave', async (req, res) => {
   res.json({ event: await toPublic(run.event, req.user!.id) });
 });
 
-/** LUTAR! (só o líder). */
+/** LUTAR! (só o líder) — boss e waves. */
 eventsRouter.post('/runs/:runId/fight', limiter, async (req, res) => {
   const r = await fightRun(String(req.params.runId), req.user!.id);
   res.json(r);
+});
+
+/** PvP em equipes: procurar adversário (entra na fila; se já houver alguém, a luta sai na hora). */
+eventsRouter.post('/runs/:runId/queue', limiter, async (req, res) => {
+  const r = await queueRun(String(req.params.runId), req.user!.id);
+  const run = await loadRun(r.runId);
+  res.json({ matched: r.matched, runId: r.runId, event: await toPublic(run.event, req.user!.id) });
+});
+
+/** PvP em equipes: parar de procurar. */
+eventsRouter.post('/runs/:runId/unqueue', limiter, async (req, res) => {
+  await unqueueRun(String(req.params.runId), req.user!.id);
+  const run = await loadRun(String(req.params.runId));
+  res.json({ event: await toPublic(run.event, req.user!.id) });
 });
 
 /** A luta gravada (para assistir). */
@@ -151,6 +167,7 @@ eventsRouter.get('/runs/:runId/replay', async (req, res) => {
   if (run.status !== 'FOUGHT' || !run.replay) throw notFound('Essa luta ainda não aconteceu.');
   res.setHeader('Cache-Control', 'private, no-store');
   res.json({
+    kind: kindOf(run.event),
     replay: JSON.parse(gunzipSync(run.replay).toString()),
     foughtAt: run.foughtAt?.toISOString(),
     serverNow: new Date().toISOString(),

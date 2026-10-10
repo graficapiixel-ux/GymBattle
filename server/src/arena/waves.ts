@@ -7,7 +7,7 @@
  * golpes. A força de tudo é RELATIVA ao time que entra (vida e dano médios dos
  * jogadores), e cresce wave a wave.
  */
-import type { AvatarLook, BossSpec, Element, FighterInput, StatusEffect, TeamArenaDef, TeamMove, VfxKey } from '@gymbattle/shared';
+import type { AvatarLook, BossSpec, Element, FighterInput, StatusEffect, TeamArenaDef, TeamMove, VfxKey, WaveThemeAdmin, WaveThemePublic } from '@gymbattle/shared';
 import { WEAPONS_BY_ID, derivedStats, mulberry32, weaponPower } from '@gymbattle/shared';
 import { BOSSES_BY_ID } from '../bosses/catalog.js';
 import type { TeamUnitInput } from './teamsim.js';
@@ -269,7 +269,9 @@ export const THEMES_BY_ID: Record<string, WaveTheme> = Object.fromEntries(THEMES
  * lutas simuladas em tools/team/calibrate.ts): sozinho é difícil; em time fica
  * mais fácil, mas as waves também crescem (mais monstros e mais vida).
  */
-export const TEAM_DIFFICULTY: Record<number, number> = { 1: 1, 2: 1, 3: 1, 4: 1, 5: 1, 6: 1, 7: 1, 8: 1, 9: 1, 10: 1 };
+export const TEAM_DIFFICULTY: Record<number, number> = {
+  1: 0.1015, 2: 0.1085, 3: 0.1326, 4: 0.1584, 5: 0.1675, 6: 0.1894, 7: 0.2047, 8: 0.2263, 9: 0.2474, 10: 0.2587,
+};
 /** Chance de vitória alvo (modo automático) por tamanho do time. */
 export const TARGET_WIN: Record<number, number> = { 1: 0.22, 2: 0.36, 3: 0.46, 4: 0.53, 5: 0.58, 6: 0.6, 7: 0.62, 8: 0.63, 9: 0.64, 10: 0.65 };
 
@@ -348,4 +350,32 @@ export function buildWaves(theme: WaveTheme, fighters: FighterInput[], seed: num
 
 export function arenaFor(theme: WaveTheme, n: number): TeamArenaDef {
   return { width: Math.round(1900 + 160 * Math.min(10, n)), ground: 600, theme: theme.bg };
+}
+
+// ------------------------------------------------------------------ visões
+
+/** O que o jogador vê do tema (só o visual: nada de vida, dano ou dificuldade). */
+export function themePublic(theme: WaveTheme): WaveThemePublic {
+  const c = theme.chief;
+  return {
+    id: theme.id, name: theme.name, desc: theme.desc, bg: { sky: theme.bg.sky, ground: theme.bg.ground, fog: theme.bg.fog, particle: theme.bg.particle },
+    monsters: theme.monsters.flatMap((m) => {
+      const base = BOSSES_BY_ID[m.base];
+      return base ? [{ name: m.name, scale: m.scale, body: { id: m.id, arch: base.arch, size: base.size, pal: { ...base.pal, ...(m.pal ?? {}) }, feat: base.feat } }] : [];
+    }),
+    chief: {
+      name: c.name, title: c.title, cls: c.cls, look: c.look, aura: c.aura,
+      equipment: { weapon: c.weapon, helm: `armor:${c.armor}:helm`, chest: `armor:${c.armor}:chest`, gloves: `armor:${c.armor}:gloves`, legs: `armor:${c.armor}:legs` },
+    },
+  };
+}
+
+/** Visão do admin: o visual + nomes dos monstros e golpes do chefe. */
+export function themeAdmin(theme: WaveTheme): WaveThemeAdmin {
+  return {
+    ...themePublic(theme),
+    waves: WAVES_TOTAL,
+    monsterNames: theme.monsters.map((m) => m.name),
+    chiefMoves: theme.chief.moves.map((m) => m.name),
+  };
 }

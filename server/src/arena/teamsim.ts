@@ -80,6 +80,8 @@ export interface TeamSimOpts {
   /** Waves: quantas são (a última é a do chefe). */
   waveTotal?: number;
   chiefName?: string;
+  /** Multiplicador da vida dos jogadores (PvP em equipes: lutas mais longas, igual para os dois lados). */
+  playerHpMult?: number;
 }
 
 type ActKind = 'none' | 'attack' | 'dash' | 'hitstun' | 'dead';
@@ -218,7 +220,7 @@ export function simulateTeamFight(opts: TeamSimOpts): TeamReplay {
       attrs = f.attributes;
       meta = {
         u, kind: 'player', team: inp.team, name: f.username, userId: f.id, level: f.level, look: f.look, equipment: f.equipment,
-        maxHp: d.maxHp, maxSt: d.maxStamina, maxMp: d.maxMana, hitbox: { w: Math.round(hb.w), h: Math.round(hb.h) }, moves,
+        maxHp: Math.round(d.maxHp * (opts.playerHpMult ?? 1)), maxSt: d.maxStamina, maxMp: d.maxMana, hitbox: { w: Math.round(hb.w), h: Math.round(hb.h) }, moves,
       };
     } else {
       moves = inp.moves ?? [];
@@ -1006,7 +1008,14 @@ export function simulateTeamFight(opts: TeamSimOpts): TeamReplay {
     frameEvery: FRAME_EVERY,
     duration: t,
     winner,
-    units: units.map((f) => f.meta),
+    // só o que o desenho precisa (nada de poder, chance de status ou recarga dos golpes)
+    units: units.map((f) => ({
+      ...f.meta,
+      moves: f.meta.moves.map((m) => ({
+        name: m.name, desc: '', kind: m.kind, vfx: m.vfx, element: m.element, hits: m.hits, range: m.range,
+        windup: m.windup, recovery: m.recovery, power: 1, stamina: 0, mana: 0, knockback: 0, ...(m.pose ? { pose: m.pose } : {}),
+      })),
+    })),
     frames,
     events,
     teamNames: opts.teamNames,

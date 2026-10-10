@@ -1,4 +1,7 @@
-/** Eventos de boss — painel do admin (catálogo, criar, editar, encerrar, histórico, prévia). */
+/**
+ * Eventos da Arena — painel do admin: boss, PvP em equipes e waves (catálogo,
+ * criar, editar, encerrar, histórico, prévia). Nada daqui chega aos jogadores.
+ */
 import { randomInt } from 'node:crypto';
 import { Router } from 'express';
 import { z } from 'zod';
@@ -6,10 +9,12 @@ import { prisma } from '../db.js';
 import { requireAdmin } from '../lib/auth.js';
 import { badRequest, notFound } from '../lib/http.js';
 import { itemInfo, toGiftDTO } from '../lib/gifts.js';
-import { MAX_TEAM, statusOf, toAdmin } from '../lib/bossEvents.js';
+import { MAX_TEAM, kindOf, statusOf, toAdmin } from '../lib/bossEvents.js';
 import { fighterSnapshot } from '../lib/battles.js';
 import { BOSSES, BOSSES_BY_ID } from '../bosses/catalog.js';
 import { simulateBossFight } from '../bosses/sim.js';
+import { TARGET_WIN, THEMES, THEMES_BY_ID, themeAdmin } from '../arena/waves.js';
+import { runPvp, runWaves } from '../arena/teamEvents.js';
 
 export const adminEventsRouter = Router();
 adminEventsRouter.use(requireAdmin);
@@ -19,8 +24,14 @@ adminEventsRouter.get('/bosses', (_req, res) => {
   res.json({ bosses: BOSSES });
 });
 
+/** Temas das waves + a chance média de vitória (modo automático) por tamanho do time. */
+adminEventsRouter.get('/themes', (_req, res) => {
+  res.json({ themes: THEMES.map(themeAdmin), autoChance: TARGET_WIN });
+});
+
 const body = z.object({
-  bossId: z.string().refine((id) => !!BOSSES_BY_ID[id], 'Escolha um boss.'),
+  kind: z.enum(['BOSS', 'PVP', 'WAVES']).default('BOSS'),
+  bossId: z.string().max(40).default('pvp'),
   startsAt: z.coerce.date(),
   hours: z.number().min(0.25, 'Mínimo de 15 minutos.').max(24 * 30, 'Máximo de 30 dias.'),
   attempts: z.number().int().min(1).max(50),
@@ -30,11 +41,17 @@ const body = z.object({
   lootXp: z.number().int().min(0).max(1_000_000).default(0),
   lootText: z.string().trim().max(300).nullable().optional(),
   winChance: z.number().int().min(0).max(100).default(40),
+  chanceAuto: z.boolean().default(true),
+}).superRefine((b, ctx) => {
+  if (b.kind === 'BOSS' && !BOSSES_BY_ID[b.bossId]) ctx.addIssue({ code: 'custom', path: ['bossId'], message: 'Escolha um boss.' });
+  if (b.kind === 'WAVES' && !THEMES_BY_ID[b.bossId]) ctx.addIssue({ code: 'custom', path: ['bossId'], message: 'Escolha um tema.' });
 });
 
 function data(b: z.infer<typeof body>) {
   return {
-    bossId: b.bossId,
+    kind: b.kind,
+    bossId: b.kind === 'PVP' ? 'pvp' : b.bossId,
+    chanceAuto: b.kind === 'WAVES' ? b.chanceAuto : true,
     startsAt: b.startsAt,
     endsAt: new Date(b.startsAt.getTime() + b.hours * 3_600_000),
     attempts: b.attempts,
@@ -48,14 +65,14 @@ function data(b: z.infer<typeof body>) {
 }
 
 adminEventsRouter.get('/', async (_req, res) => {
-  const evs = await prisma.bossEvent.findMany({ orderBy: { startsAt: 'desc' }, take: 100 });
+  const evs = await prisma.bossEvent.findMany({ orderBy: { startsAt: 'desc' }, take: 150 });
   res.json({ events: await Promise.all(evs.map(toAdmin)), serverNow: new Date().toISOString() });
 });
 
 adminEventsRouter.post('/', async (req, res) => {
   const b = body.parse(req.body);
   const ev = await prisma.bossEvent.create({ data: data(b) });
-  await prisma.moderationLog.create({ data: { actorId: req.user!.id, action: 'EVENT_CREATE', details: { eventId: ev.id, bossId: ev.bossId } } });
+  await prisma.moderationLog.create({ data: { actorId: req.user!.id, action: 'EVENT_CREATE', details: { eventId: ev.id, kind: ev.kind, bossId: ev.bossId } } });
   res.status(201).json({ event: await toAdmin(ev) });
 });
 
@@ -65,6 +82,7 @@ adminEventsRouter.put('/:id', async (req, res) => {
   if (!old) throw notFound('Evento não encontrado.');
   if (statusOf(old) === 'ENDED') throw badRequest('Esse evento já acabou.');
   // se ainda não começou e mudou a data, o aviso de início vai na hora certa
+  if (b.kind !== kindOf(old)) throw badRequest('Não dá para mudar o tipo do evento. Crie outro.');
   const ev = await prisma.bossEvent.update({
     where: { id: old.id },
     data: { ...data(b), ...(statusOf(old) === 'SCHEDULED' ? { announcedAt: null, lastReminderAt: null } : {}) },
@@ -77,7 +95,7 @@ adminEventsRouter.put('/:id', async (req, res) => {
 adminEventsRouter.post('/:id/end', async (req, res) => {
   const ev = await prisma.bossEvent.update({ where: { id: String(req.params.id) }, data: { endedAt: new Date() } }).catch(() => null);
   if (!ev) throw notFound('Evento não encontrado.');
-  await prisma.bossRun.updateMany({ where: { eventId: ev.id, status: 'FORMING' }, data: { status: 'CANCELLED' } });
+  await prisma.bossRun.updateMany({ where: { eventId: ev.id, status: { in: ['FORMING', 'QUEUED'] } }, data: { status: 'CANCELLED' } });
   await prisma.moderationLog.create({ data: { actorId: req.user!.id, action: 'EVENT_END', details: { eventId: ev.id } } });
   res.json({ event: await toAdmin(ev) });
 });
@@ -102,13 +120,54 @@ adminEventsRouter.get('/:id/history', async (req, res) => {
   const gifts = await prisma.gift.findMany({ where: { eventId: ev.id }, include: { user: { select: { username: true } } }, orderBy: { createdAt: 'desc' } });
   res.json({
     event: await toAdmin(ev),
-    runs: runs.map((r) => ({
-      id: r.id, won: !!r.won, foughtAt: r.foughtAt?.toISOString() ?? null,
-      leader: r.members.find((m) => m.userId === r.leaderId)?.user.username ?? null,
-      members: r.members.map((m) => m.user.username),
-    })),
+    kind: kindOf(ev),
+    runs: runs
+      // PvP: cada luta aparece uma vez (o time da casa e o adversário)
+      .filter((r) => !r.vsRunId || !runs.some((o) => o.id === r.vsRunId && o.id < r.id))
+      .map((r) => {
+        const vs = r.vsRunId ? runs.find((o) => o.id === r.vsRunId) : undefined;
+        return {
+          id: r.id, won: r.won, foughtAt: r.foughtAt?.toISOString() ?? null,
+          leader: r.members.find((m) => m.userId === r.leaderId)?.user.username ?? null,
+          members: r.members.map((m) => m.user.username),
+          vs: vs ? vs.members.map((m) => m.user.username) : undefined,
+          reached: r.reached,
+        };
+      }),
     loot: gifts.map((g) => ({ ...toGiftDTO(g), username: g.user.username })),
   });
+});
+
+/** Jogadores de verdade para as prévias (o admin + os de nível mais alto que já têm arma). */
+async function previewTeam(adminId: string, n: number, skip = 0) {
+  const me = await prisma.user.findUnique({ where: { id: adminId } });
+  const others = await prisma.user.findMany({ where: { id: { not: adminId }, starterWeapon: { not: null } }, take: n + skip, orderBy: { level: 'desc' } });
+  return [me!, ...others].slice(skip, skip + n).map(fighterSnapshot);
+}
+
+/** Prévia das waves ou do PvP em equipes (não grava nada, ninguém é avisado). */
+adminEventsRouter.post('/preview-team', async (req, res) => {
+  const b = z.object({
+    kind: z.enum(['PVP', 'WAVES']),
+    themeId: z.string().optional(),
+    team: z.number().int().min(1).max(MAX_TEAM).default(3),
+    chanceAuto: z.boolean().default(true),
+    winChance: z.number().int().min(0).max(100).default(40),
+  }).parse(req.body);
+  if (b.kind === 'WAVES') {
+    const theme = THEMES_BY_ID[b.themeId ?? ''];
+    if (!theme) throw notFound('Tema não encontrado.');
+    const fighters = await previewTeam(req.user!.id, b.team);
+    const r = runWaves(theme, fighters, b.chanceAuto ? { auto: true } : { auto: false, percent: b.winChance });
+    return void res.json({ replay: r.replay });
+  }
+  const all = await previewTeam(req.user!.id, b.team * 2);
+  const half = Math.ceil(all.length / 2);
+  const A = all.filter((_, i) => i % 2 === 0).slice(0, half);
+  const B = all.filter((_, i) => i % 2 === 1);
+  if (!B.length) throw badRequest('Precisa de pelo menos 2 jogadores com arma para a prévia.');
+  const name = (f: typeof A) => (f.length === 1 ? f[0].username : `Time de ${f[0].username}`);
+  res.json({ replay: runPvp({ name: name(A), fighters: A }, { name: name(B), fighters: B }, randomInt(1, 2_000_000_000)) });
 });
 
 /** Prévia de uma luta (não grava nada): para o admin ver o boss em ação. */

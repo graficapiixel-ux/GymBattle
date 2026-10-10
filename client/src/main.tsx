@@ -68,6 +68,7 @@ function Root() {
       <Routes>
         <Route path="luta/:id" element={<BattleView />} />
         <Route path="chefe/:runId" element={<BossFightPage />} />
+        <Route path="evento/:runId" element={<BossFightPage />} />
         <Route element={<AppShell />}>
           <Route index element={<Feed />} />
           <Route path="postar" element={<PostPage />} />

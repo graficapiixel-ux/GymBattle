@@ -3,7 +3,8 @@ import { prisma } from '../db.js';
 import { env } from '../env.js';
 import { getSettingRaw, setSettingRaw } from './settings.js';
 
-export type NotifType = 'LIKE' | 'COMMENT' | 'CHALLENGE' | 'CHALLENGE_ACCEPTED' | 'CHALLENGE_DECLINED' | 'CHALLENGE_EXPIRED' | 'FAKE' | 'FAKE_GROUP' | 'REMINDER' | 'SEASON' | 'GROUP_INVITE' | 'GROUP' | 'BOSS_EVENT' | 'BOSS_INVITE' | 'BOSS_FIGHT';
+export type NotifType = 'LIKE' | 'COMMENT' | 'CHALLENGE' | 'CHALLENGE_ACCEPTED' | 'CHALLENGE_DECLINED' | 'CHALLENGE_EXPIRED' | 'FAKE' | 'FAKE_GROUP' | 'REMINDER' | 'SEASON' | 'GROUP_INVITE' | 'GROUP' | 'BOSS_EVENT' | 'BOSS_INVITE' | 'BOSS_FIGHT'
+  | 'PVP_EVENT' | 'PVP_INVITE' | 'PVP_FIGHT' | 'WAVES_EVENT' | 'WAVES_INVITE' | 'WAVES_FIGHT';
 
 interface NotifInput {
   userId: string;
@@ -59,6 +60,12 @@ const TITLES: Record<NotifType, string> = {
   BOSS_EVENT: 'EVENTO NA ARENA! 🐉',
   BOSS_INVITE: 'Chamado para a batalha ⚔️',
   BOSS_FIGHT: 'A batalha começou! 🔥',
+  PVP_EVENT: 'PvP EM EQUIPES NA ARENA! ⚔️',
+  PVP_INVITE: 'Chamado para o PvP em equipes ⚔️',
+  PVP_FIGHT: 'Adversário encontrado! ⚔️',
+  WAVES_EVENT: 'HORDAS NA ARENA! 💀',
+  WAVES_INVITE: 'Chamado para enfrentar as hordas 💀',
+  WAVES_FIGHT: 'As hordas chegaram! 🔥',
 };
 
 async function sendPush(userId: string, title: string, body: string, url: string) {
@@ -112,12 +119,27 @@ export function notifText(type: NotifType, actor: string | null, text?: string |
       return `${who} te chamou para enfrentar ${text ?? 'o boss'} no time dele!`;
     case 'BOSS_FIGHT':
       return `A luta contra ${text ?? 'o boss'} começou — assista!`;
+    case 'PVP_EVENT':
+    case 'WAVES_EVENT':
+      return text ?? 'Um evento começou na Arena!';
+    case 'PVP_INVITE':
+      return `${who} te chamou para o time dele no PvP em equipes!`;
+    case 'WAVES_INVITE':
+      return `${who} te chamou para enfrentar as hordas de ${text ?? 'monstros'} no time dele!`;
+    case 'PVP_FIGHT':
+      // nunca conta quem venceu: a graça é assistir
+      return `Seu time vai enfrentar ${text ?? 'outro time'} no PvP em equipes — a luta começou, assista!`;
+    case 'WAVES_FIGHT':
+      return `As hordas de ${text ?? 'monstros'} chegaram — a luta começou, assista!`;
   }
 }
 
 export function notifUrl(n: { type: string; postId?: string | null; battleId?: string | null; challengeId?: string | null }) {
   if (n.type === 'BOSS_FIGHT' && n.battleId) return `/chefe/${n.battleId}`;
-  if (n.type.startsWith('BOSS')) return '/arena';
+  if ((n.type === 'PVP_FIGHT' || n.type === 'WAVES_FIGHT') && n.battleId) return `/evento/${n.battleId}`;
+  if (n.type.startsWith('BOSS')) return '/arena?evento=boss';
+  if (n.type.startsWith('PVP')) return '/arena?evento=pvp';
+  if (n.type.startsWith('WAVES')) return '/arena?evento=waves';
   if (n.battleId) return `/luta/${n.battleId}`;
   // desafio recebido: abre a página do desafio (aceitar ou recusar), nunca aceita sozinho
   if (n.type === 'CHALLENGE' && n.challengeId) return `/desafio/${n.challengeId}`;

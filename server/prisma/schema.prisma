@@ -362,6 +362,9 @@ model Gift {
 /// Evento de boss (secreto até começar). bossId = chave do catálogo do servidor.
 model BossEvent {
   id             String    @id @default(cuid())
+  /// BOSS | PVP (PvP em equipes) | WAVES
+  kind           String    @default("BOSS") @db.VarChar(6)
+  /// Boss: id do boss · Waves: id do tema · PvP: "pvp"
   bossId         String    @db.VarChar(40)
   startsAt       DateTime
   endsAt         DateTime
@@ -373,6 +376,8 @@ model BossEvent {
   lootXp         Int       @default(0)
   lootText       String?   @db.VarChar(300)
   winChance      Int       @default(40) // %, só o admin vê
+  /// Waves: true = a chance sai das habilidades dos jogadores; false = usa winChance
+  chanceAuto     Boolean   @default(true)
   announcedAt    DateTime?
   lastReminderAt DateTime?
   createdAt      DateTime  @default(now())
@@ -388,8 +393,13 @@ model BossRun {
   event     BossEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
   leaderId  String
   leader    User      @relation("RunLeader", fields: [leaderId], references: [id], onDelete: Cascade)
-  status    String    @default("FORMING") @db.VarChar(10) // FORMING | FOUGHT | CANCELLED
+  status    String    @default("FORMING") @db.VarChar(10) // FORMING | QUEUED (PvP: procurando adversário) | FIGHTING | FOUGHT | CANCELLED
   won       Boolean?
+  /// PvP em equipes: o time adversário e quando entrou na fila
+  vsRunId   String?   @db.VarChar(40)
+  queuedAt  DateTime?
+  /// Waves: até que wave o time chegou
+  reached   Int?
   seed      Int       @default(0)
   replay    Bytes?    @db.MediumBlob
   duration  Int       @default(0) // ticks
