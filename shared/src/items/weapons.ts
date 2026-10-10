@@ -422,7 +422,7 @@ const bows = group('bow', [
 const staffs = group('staff', [
   {
     id: 'cajado-aprendiz', name: 'Cajado de Aprendiz', rarity: 'common', price: 250, starter: true,
-    req: { int: 8, ess: 6 }, scale: { int: 'C' }, el: 'arcane',
+    req: { int: 8 }, scale: { int: 'C' }, el: 'arcane',
     lore: 'Todo arquimago começou com um destes. A maioria o queimou na primeira semana.',
     a1: ['Faísca arcana', 'Pequeno projétil de energia.', 'projectile', 'arcane_missiles'],
     a2: ['Rajada arcana', 'Três projéteis teleguiados.', 'projectile', 'arcane_missiles', { hits: 3 }],
@@ -476,7 +476,7 @@ const staffs = group('staff', [
 const seals = group('seal', [
   {
     id: 'selo-do-novico', name: 'Selo do Noviço', rarity: 'common', price: 250, starter: true,
-    req: { fai: 8, ess: 6 }, scale: { fai: 'C' }, el: 'holy',
+    req: { fai: 8 }, scale: { fai: 'C' }, el: 'holy',
     lore: 'Entregue no primeiro dia do mosteiro, junto com uma vassoura.',
     a1: ['Lança de luz', 'Pequeno raio sagrado.', 'projectile', 'holy_beam'],
     a2: ['Cura menor', 'Recupera um pouco de vida.', 'heal', 'heal', { power: 1.0, range: 0 }],

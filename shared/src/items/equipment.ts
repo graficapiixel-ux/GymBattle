@@ -16,8 +16,8 @@ export type EquipSlot = 'weapon' | ArmorSlot;
 
 /** Requisitos que faltam para usar a arma sem penalidade. */
 export function missingRequirements(w: WeaponDef, attrs: Attributes): { attr: AttributeKey; need: number; have: number }[] {
-  // armas iniciais (grátis) nunca têm penalidade: o jogador novo começa com tudo em 5
-  if (w.starter) return [];
+  // armas iniciais seguem a mesma regra das outras: sem o atributo da arma, o potencial cai
+  // (antes eram isentas, e a Espada do Recruta rendia 100% até em builds de Fé ou Inteligência)
   return (Object.entries(w.requirements) as [AttributeKey, number][])
     .filter(([k, need]) => attrs[k] < need)
     .map(([k, need]) => ({ attr: k, need, have: attrs[k] }));

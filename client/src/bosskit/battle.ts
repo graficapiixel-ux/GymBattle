@@ -888,8 +888,8 @@ export class BossBattle {
                   ? [180, maxX - 20]
                   : [40, Math.min(maxX - 40, 420)]
                 : meta.style === 'melee'
-                  ? [40, 420]
-                  : [300, 860];
+                  ? [40, 360]
+                  : [260, 640];
               // escolhe um lugar que não esteja colado no de outro jogador
               for (let tries = 0; tries < 5; tries++) {
                 if (this.duel) o.goal = R(zone[0], Math.max(zone[0] + 10, zone[1]));
@@ -1045,7 +1045,8 @@ export class BossBattle {
     const rw = new Float32Array(N);
     const rt = new Float32Array(N);
     const n = this.r.players.length;
-    const half = this.duel ? 60 : 200 * this.bk;
+    // corpo inteiro do boss (cauda/abdômen e garras incluídos)
+    const half = this.duel ? 60 : 250 * this.bk + 20;
     const tall = this.duel ? 160 : 390 * this.bk;
     for (let k = 0; k < N; k++) {
       const s = k / FPS;
@@ -1109,34 +1110,22 @@ export class BossBattle {
     const w0 = L(this.cam.w);
     const top = L(this.cam.top);
     const port = this.portrait;
-    const size = this.r.boss.size;
-    // celular em pé: abre mais (antes cortava os jogadores e ficava "colado" no boss)
-    const minW = port ? (this.duel ? 560 : 540) : this.duel ? 720 : 900;
-    // celular em pé: fecha mais na ação (quem sai do quadro vira setinha na borda)
-    const maxW = port ? (this.duel ? 700 : 680 + 40 * size) : this.duel ? W + 120 : 1280 + 60 * size;
-    let viewW = clamp(w0 + (port ? 60 : 140), minW, maxW);
-    const gy = port ? (this.duel ? 0.76 : 0.8) : 0.85; // onde fica o chão na tela
+    // A câmera enquadra SEMPRE todo mundo (jogadores vivos + boss): quando eles se afastam ela
+    // afasta, quando chegam perto ela aproxima — suave nos dois sentidos (a caixa já vem suavizada).
+    const minW = port ? (this.duel ? 520 : 520) : this.duel ? 700 : 760;
+    const AW = this.AW;
+    const margin = 110;
+    let viewW = Math.min(AW + 2 * margin, Math.max(minW, w0 + (port ? 90 : 170)));
+    const gy = port ? (this.duel ? 0.76 : 0.86) : 0.85; // onde fica o chão na tela
     let kk = cw / viewW;
     // garante que o alto da ação cabe (boss no céu, pulos)
     const need = GROUND - top + (this.duel ? 30 : 70); // + espaço da barra de vida do boss
     if (need > (ch / kk) * gy) {
-      kk = Math.max((ch * gy) / need, cw / (maxW * (port ? 1.2 : 1.6)));
+      kk = (ch * gy) / need;
       viewW = cw / kk;
     }
     const viewH = ch / kk;
-    const margin = 110;
-    let cx = cx0;
-    // se não couber todo mundo, o boss continua inteiro na tela e entram os jogadores mais perto
-    // dele (transição contínua: só desloca quando precisa)
-    if (!this.duel) {
-      const bx = L(this.cam.bx);
-      const half = 250 * this.bk + 20;
-      const lo = bx + half - viewW / 2;
-      const hi = bx - half + viewW / 2;
-      cx = lo <= hi ? clamp(cx0, lo, hi) : bx;
-    }
-    const AW = this.AW;
-    cx = viewW >= AW + 2 * margin ? AW / 2 : clamp(cx, viewW / 2 - margin, AW - viewW / 2 + margin);
+    const cx = viewW >= AW + 2 * margin ? AW / 2 : clamp(cx0, viewW / 2 - margin, AW - viewW / 2 + margin);
     return { k: kk, ox: -(cx - viewW / 2), oy: viewH * gy - GROUND };
   }
 
@@ -1359,7 +1348,7 @@ export class BossBattle {
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     ctx.fillStyle = rgrad(ctx, AW / 2, GROUND - 220, AW * 0.55, bg.fog + '40', 'transparent');
-    ctx.fillRect(L, GROUND - 900, Rr - L, 950);
+    ctx.fillRect(L, top, Rr - L, GROUND + 50 - top); // da borda de cima da tela: sem "degrau" quando a câmera afasta muito
     ctx.restore();
     // 3 camadas de morros: as do fundo andam menos que a câmera
     const cx = (vx0 + vx1) / 2;
