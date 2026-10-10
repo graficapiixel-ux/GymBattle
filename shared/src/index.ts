@@ -9,3 +9,4 @@ export * from './ranking.js';
 export * from './power.js';
 export * from './cpf.js';
 export type * from './boss.js';
+export * from './team.js';

@@ -1,0 +1,17 @@
+import { mulberry32 } from '@gymbattle/shared';
+import { simulateTeamFight } from '../../server/src/arena/teamsim';
+import { THEMES, WAVES_TOTAL, arenaFor, buildWaves } from '../../server/src/arena/waves';
+import { testFighter, weaponFor } from './fighters';
+const n = Number(process.argv[2] ?? 2);
+const r = mulberry32(5);
+const team = Array.from({ length: n }, (_, i) => testFighter(i, 12, weaponFor(12, r)));
+const theme = THEMES[Number(process.argv[3] ?? 0)];
+const units = buildWaves(theme, team, 3);
+console.log(units.map((u) => `${u.kind}:${u.name ?? u.fighter?.username}:w${u.wave ?? 0}:hp${Math.round(u.hp ?? 0)}:dmg${Math.round(u.dmg ?? 0)}`).join(' | '));
+const rep = simulateTeamFight({ seed: 3, mode: 'waves', arena: arenaFor(theme, n), units, teamNames: ['Time', theme.name], waveTotal: WAVES_TOTAL, chiefName: theme.chief.name });
+const cnt: Record<string, number> = {};
+for (const e of rep.events) cnt[e.type] = (cnt[e.type] ?? 0) + 1;
+console.log('winner', rep.winner, 'reached', rep.waves, 'dur', rep.duration / 30, cnt);
+for (const e of rep.events.filter((e) => e.type === 'wave' || e.type === 'spawn' || e.type === 'ko').slice(0, 30)) console.log(JSON.stringify(e));
+const f = rep.frames[Math.floor(rep.frames.length / 2)];
+console.log('mid frame', f.slice(0, 2 + f[1] * 8));
